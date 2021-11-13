@@ -1,0 +1,362 @@
+scilla_version 0
+
+(* Registry contract for HGX *)
+(* Zilliqa Research *)
+
+import BoolUtils ListUtils
+library Registry
+
+(* checks if a sender is an admin or owner *)
+let is_admin_or_owner =
+    fun (administrators: Map ByStr20 String) =>
+    fun (owner: ByStr20) =>
+    fun (sender: ByStr20) =>
+        let is_admin = builtin contains administrators sender in
+        let is_owner = builtin eq sender owner in
+        let allowed = orb is_admin is_owner in
+        match allowed with
+        | True => True
+        | False => False
+        end
+
+let one_msg =
+    fun(msg: Message) =>
+        let nil_message = Nil {Message} in
+        Cons {Message} msg nil_message 
+
+type MakeMapResponse =
+| MakeMapResponse of Uint32 Map ByStr20 String 
+
+(* append a list of (accounts, datetime) to an existing map. Returns the new updated map *)
+(* if an address exists, function should update with new timestamp *)
+let make_accounts_map =
+    fun (accounts : List (Pair (ByStr20) (String))) =>
+    fun (existing_map : Map ByStr20 String) =>
+        let iterator =
+            fun (accumulator : Map ByStr20 String) =>
+            fun (current_pair : Pair (ByStr20) (String)) =>
+                match current_pair with
+                | Pair current_account datetime => builtin put accumulator current_account datetime
+                end 
+            in
+        let folder = @list_foldl (Pair (ByStr20) (String)) (Map ByStr20 String) in
+        folder iterator existing_map accounts 
+
+type Error =
+| Unauthorised
+| NotWhitelisted
+| ContractNotFound
+| InvalidParams
+| ContractExists
+| TransferPaused
+
+(* Error Events *)
+let make_error_event =
+  fun (transitionName : String) =>
+  fun (err: Error) =>
+    let err_code =
+        match err with
+        | Unauthorised       => Int32 -1
+        | NotWhitelisted     => Int32 -2
+        | ContractNotFound   => Int32 -3
+        | InvalidParams      => Int32 -4
+        | ContractExists     => Int32 -5
+        | TransferPaused     => Int32 -6
+        end in
+    { _eventname: "RegistryError"; raisedAt: transitionName; err_code: err_code}
+
+contract Registry(
+  init_owner: ByStr20    
+)
+
+(* Current owner of the contract *)
+field owner : ByStr20 = init_owner
+
+(* Administrators do not create the contract, but they are allowed to perform the functions *)
+field administrators : Map ByStr20 String = Emp ByStr20 String
+
+(* registry is the list of registry addresses. Registry addresses which have been through KYC/AML *)
+field registry : Map ByStr20 String = Emp ByStr20 String
+field registry_size : Uint32 = Uint32 0
+field pause : Bool = False
+
+(* list of token contracts. Map from Contract Address to Securities Name *)
+field contracts : Map ByStr20 String = Emp ByStr20 String
+
+procedure MakeError (transitionName: String, err: Error)
+    e = make_error_event transitionName err;
+    event e
+end
+
+(* suspend all incoming transfer transactions to all security tokens *)
+transition SuspendAllTransfers()
+  label = "PauseAllTransfers";
+  admins <- administrators;
+  owner_tmp <- owner;
+  check_allowed = is_admin_or_owner admins owner_tmp _sender;
+  match check_allowed with
+  | True =>
+    f = True;
+    pause := f;
+    e = {_eventname: "SuspendAllTransfersSuccess"; by: _sender};
+    event e
+  | False =>
+    err = Unauthorised;
+    MakeError label err
+  end
+end
+
+(* resumes transfer transactions to all security tokens *)
+transition ResumeAllTransfers()
+
+  label = "ResumeeAllTransfers";
+  admins <- administrators;
+  owner_tmp <- owner;
+  check_allowed = is_admin_or_owner admins owner_tmp _sender;
+  match check_allowed with
+  | True =>
+    f = False;
+    pause := f;
+    e = {_eventname: "ResumeAllTransferSuccess"; by: _sender};
+    event e
+  | False =>
+    err = Unauthorised;
+    MakeError label err
+  end
+end
+
+transition ChangeOwner (newOwner: ByStr20)
+    owner_tmp <- owner;
+    check_owner = builtin eq _sender owner_tmp;
+    label = "ChangeOwner";
+    match check_owner with
+    | True =>
+        owner := newOwner;
+        e = {_eventname: "ChangeOwnerSuccess"; owner: newOwner};
+        event e
+    | False =>
+        err = Unauthorised;
+        MakeError label err
+    end
+end
+
+transition AddAdmin (address: ByStr20, id: String)
+    owner_tmp <- owner;
+    check_owner = builtin eq _sender owner_tmp;
+    label = "AddAdmin";
+    match check_owner with
+    | True =>
+        (* Adds address as an admin *)
+        (* id is an identifier to know who the admin is in real-life *)
+        administrators[address] := id;
+        e = {_eventname: "AddAdminSuccess"; addressAdded: address; id: id};
+        event e
+    | False =>
+        err = Unauthorised;
+        MakeError label err
+    end
+end
+
+
+transition RemoveAdmin (address: ByStr20)
+    owner_tmp <- owner;
+    check_owner = builtin eq _sender owner_tmp;
+    label = "RemoveAdmin";
+    match check_owner with
+    | True =>
+        (* Adds address as an admin *)
+        (* id is an identifier to know who the admin is in real-life *)
+        delete administrators[address];
+        e = {_eventname: "RemoveAdminSuccess"; address: address};
+        event e
+    | False =>
+        err = Unauthorised;
+        MakeError label err
+    end
+end
+
+transition AddContract(contract_address: ByStr20, securities_name: String)
+    label = "AddContract";
+    admins <- administrators;
+    owner_tmp <- owner;
+    check_allowed = is_admin_or_owner admins owner_tmp _sender;
+    match check_allowed with
+    | True =>
+        (* proceeds with adding contracts *)
+        contract_exist <- exists contracts[contract_address];
+        match contract_exist with
+        | True =>
+            err = ContractExists;
+            MakeError label err
+        | False =>
+            (* contract does not exist, proceed to add it *)
+            contracts[contract_address] := securities_name;
+            e = {_eventname: "AddContractSuccess";
+                contract_address: contract_address;
+                name: securities_name;
+                addedBy: _sender};
+            event e
+        end
+    | False =>
+        (* unauthorised error *)
+        err = Unauthorised;
+        MakeError label err
+    end
+end
+
+transition RemoveContract(contract_address: ByStr20)
+    label = "RemoveContract";
+    admins <- administrators;
+    owner_tmp <- owner;
+    check_allowed = is_admin_or_owner admins owner_tmp _sender;
+    match check_allowed with
+    | True =>
+        (* proceeds with removing contracts *)
+        contract_exists <- exists contracts[contract_address];
+        match contract_exists with
+        | True =>
+            (* contract exists, proceeds to remove it *)
+            delete contracts[contract_address];
+            e = {_eventname: "RemoveContractSuccess";
+                contract_address: contract_address;
+                removedBy: _sender};
+            event e
+        | False =>
+            err = ContractNotFound;
+            MakeError label err
+        end
+    | False =>
+        (* unauthorised error *)
+        err = Unauthorised;
+        MakeError label err
+    end
+end
+
+(* Add an account to the registry. An account represents the end investor *)
+transition AddAccount(address: ByStr20, datetime_added: String)
+    label = "AddAccount";
+    admins <- administrators;
+    owner_tmp <- owner;
+    check_allowed = is_admin_or_owner admins owner_tmp _sender;
+    match check_allowed with
+    | True =>
+       (* proceeds with adding contracts *)
+       registry[address] := datetime_added;
+       (* Update count of the registry_size *)
+       current_size <- registry_size;
+       new_size = let one = Uint32 1 in builtin add current_size one;
+       registry_size := new_size;
+       get_id <- administrators[address];
+       id = match get_id with
+       | Some i => i
+       | None => "Owner"
+       end;
+
+       (* Broadcast admin ID to be picked up by frontend *)
+       e = {_eventname: "AddAccountSuccess";
+            address: address;
+            datetime: datetime_added;
+            id: id};
+       event e
+    | False =>
+        (* unauthorised error *)
+        err = Unauthorised;
+        MakeError label err
+    end
+end
+
+(* Utility function to replace all accounts in the registry with a fresh set *)
+transition BulkAppendAccounts (accounts: List ByStr20, datetime_added : List String)
+  label = "BulkAppendAccounts";
+  admins <- administrators;
+  owner_tmp <- owner;
+  check_allowed = is_admin_or_owner admins owner_tmp _sender;
+  match check_allowed with
+  | True =>
+
+    (* Check if the length of the list exceeds the maximum number of members *)
+    l1 = let list_length_bystr20 = @list_length ByStr20 in
+            list_length_bystr20 accounts;
+    l2 = let list_length_string = @list_length String in
+            list_length_string datetime_added;
+    is_length_equal = builtin eq l1 l2;
+    match is_length_equal with
+    | True =>
+        list_pair = let zip = @list_zip ByStr20 String in
+                    zip accounts datetime_added;
+        current_registry <- registry;
+        current_registry_size <- registry_size;
+        new_registry_size = builtin add current_registry_size l1;
+        registry_size := new_registry_size;
+        new_map = make_accounts_map list_pair current_registry;
+        registry := new_map;
+        (* @dev it is possible to have num_accounts_added + current_size < new_registry_size *)
+        (* if an account exists in the map, make_accounts_map should update the existing record with a new timestamp *)
+
+        e = {
+            _eventname: "BulkAppendAccountsSuccessful";
+            previous_registry_size: current_registry_size;
+            new_registry_size: new_registry_size;
+            num_accounts_added: l1;
+            addedBy: _sender
+        };
+        event e
+    | False =>
+        err = InvalidParams;
+        MakeError label err
+    end
+  | False =>
+    (* unauthorised error *)
+    err = Unauthorised;
+    MakeError label err
+  end
+end
+
+(* process transfer from _sender to recipient. Does not include operator functions *)
+transition ProcessTransfer(
+    contract_address: ByStr20,
+    toAddr: ByStr20,
+    number_of_tokens: Uint128)
+    label = "ProcessTransfer";
+    is_paused <- pause;
+    (* checks if contract is paused *)
+    match is_paused with
+    | False =>
+      check_contract <- exists contracts[contract_address];
+      match check_contract with
+      | True =>
+          (* checks if both the fromAddr and toAddr are whitelisted *)
+          c1 <- exists registry[toAddr];
+          c2 <- exists registry[_sender];
+          t = True;
+
+          (* todo: change to and_3 when merged to stdlib *)
+          address_in_registry = let check_1 = andb c1 c2 in
+          andb check_1 t;
+          match address_in_registry with
+          | True =>
+              (* both addresses are in registry, proceeds with transfer *)
+              e = {_eventname: "ProcessTransferSuccessful"; contract_address: contract_address};
+              event e;
+              msgs = let m = {_tag: "TransferFrom";
+                  _recipient: contract_address;
+                  _amount: Uint128 0;
+                  from: _sender;
+                  to: toAddr;
+                  tokens: number_of_tokens} in one_msg m;
+              send msgs
+          | False =>
+              (* one of the addresses not in whitelist *)
+              err = NotWhitelisted;
+              MakeError label err
+          end
+      | False =>
+          err = ContractNotFound;
+          MakeError label err
+      end
+    | True =>
+      (* pause flag is switched on. No transfer should proceed *)
+      err = TransferPaused;
+      MakeError label err
+    end
+end

@@ -1,0 +1,20 @@
+scilla_version 0
+
+contract Voting(organizer:ByStr20, description:String)
+
+field yesCount:Int256 = Int256 0  
+field noCount:Int256 = Int256 0  
+
+transition voteYes()
+  one256 = Int256 1;
+  yesCountTmp <- yesCount ; 
+  yesCountPlusOne = builtin add yesCountTmp one256;
+  yesCount:= yesCountPlusOne
+end
+
+transition voteNo()
+  one256 = Int256 1;
+  noCountTmp <- noCount;
+  noCountPlusOne = builtin add noCountTmp one256;
+  noCount := noCountPlusOne
+end 

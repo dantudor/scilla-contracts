@@ -1,0 +1,171 @@
+scilla_version 0
+
+    (* This contract implements a fungible token interface a la ERC20.*)
+    
+    (***************************************************)
+    (*               Associated library                *)
+    (***************************************************)
+    library FungibleToken
+    
+    let one = Uint128 1
+    let zero = Uint128 0
+    
+    let min_int =
+      fun (a : Uint128) => fun (b : Uint128) =>
+      let alt = builtin lt a b in
+      match alt with
+      | True =>
+        a
+      | False =>
+        b
+      end
+    
+    let le_int =
+      fun (a : Uint128) => fun (b : Uint128) =>
+        let x = builtin lt a b in
+        match x with
+        | True => True
+        | False =>
+          let y = builtin eq a b in
+          match y with
+          | True => True
+          | False => False
+          end
+        end
+    
+    (* Returns singleton List Message *)
+    let one_msg =
+        fun (msg : Message) =>
+            let nil_msg = Nil {Message} in
+            Cons {Message} msg nil_msg
+    
+    
+    (***************************************************)
+    (*             The contract definition             *)
+    (***************************************************)
+    
+    contract FungibleToken
+    (owner : ByStr20,
+     total_tokens : Uint128,
+     decimals : Uint32,
+     name : String,
+     symbol : String)
+    
+    (* Initial balance is not stated explicitly: it's initialized when creating the contract. *)
+    
+    field balances : Map ByStr20 Uint128 =
+      let m = Emp ByStr20 Uint128 in
+        builtin put m owner total_tokens
+    field allowed : Map ByStr20 (Map ByStr20 Uint128) = Emp ByStr20 (Map ByStr20 Uint128)
+    
+    transition BalanceOf (tokenOwner : ByStr20)
+      bal <- balances[tokenOwner];
+      match bal with
+      | Some v =>
+        e = { _eventname : "BalanceOfResponse"; address : tokenOwner; balance : v};
+        event e
+      | None =>
+        e = { _eventname : "BalanceOfResponse"; address : tokenOwner; balance : zero};
+        event e
+      end
+    end
+    
+    transition TotalSupply ()
+      e = { _eventname : "TotalSupplyResponse"; caller : _sender; totalSupply : total_tokens};
+      event e
+    end
+    
+    transition Transfer (to : ByStr20, tokens : Uint128)
+      bal <- balances[_sender];
+      match bal with
+      | Some b =>
+        can_do = le_int tokens b;
+        match can_do with
+        | True =>
+          (* Subtract tokens from _sender and add it to "to" *)
+          new_sender_bal = builtin sub b tokens;
+          balances[_sender] := new_sender_bal;
+    
+          (* Adds tokens to "to" address *)
+          to_bal <- balances[to];
+          new_to_bal = match to_bal with
+          | Some x => builtin add x tokens
+          | None => tokens
+          end;
+    
+          balances[to] := new_to_bal;
+          e = { _eventname : "TransferSuccess"; sender : _sender; recipient : to; amount : tokens};
+          event e
+        | False =>
+          (* Balance not sufficient. *)
+          e = { _eventname : "TransferFailure"; sender : _sender; recipient : to; amount : zero};
+          event e
+        end
+      | None =>
+        (* no balance record, can't transfer *)
+        e = { _eventname : "TransferFailure"; sender : _sender; recipient : to; amount : zero};
+        event e
+      end
+    end
+    
+    transition TransferFrom (from : ByStr20, to : ByStr20, tokens : Uint128)
+      bal <- balances[from];
+      (* Check if _sender has been authorized by "from" *)
+      sender_allowed_from <- allowed[from][_sender];
+      match bal with
+      | Some a =>
+        match sender_allowed_from with
+        | Some b =>
+            (* We can only transfer the minimum of available or authorized tokens *)
+            t = min_int a b;
+            can_do = le_int tokens t;
+            match can_do with
+            | True =>
+                (* Tokens is what we should subtract from "from" and add to "to" *)
+                new_from_bal = builtin sub a tokens;
+                balances[from] := new_from_bal;
+                to_bal <- balances[to];
+                match to_bal with
+                | Some tb =>
+                    new_to_bal = builtin add tb tokens;
+                    balances[to] := new_to_bal
+                | None =>
+                    (* "to" has no balance. So just set it to tokens *)
+                    balances[to] := tokens
+                end;
+                (* Reduce "allowed" by "tokens" *)
+                new_allowed = builtin sub b tokens;
+                allowed[from][_sender] := new_allowed;
+                e = { _eventname : "TransferFromSuccess"; sender : from; recipient : to; amount : tokens };
+                event e
+            | False =>
+                e = { _eventname : "TransferFromFailure"; sender : from; recipient : to; amount : zero };
+                event e
+            end
+        | None =>
+            e = { _eventname : "TransferFromFailure"; sender : from; recipient : to; amount : zero };
+            event e
+        end
+      | None =>
+          e = { _eventname : "TransferFromFailure"; sender : from; recipient : to; amount : zero };
+          event e
+      end
+    end
+    
+    transition Approve (spender : ByStr20, tokens : Uint128)
+      allowed[_sender][spender] := tokens;
+      e = { _eventname : "ApproveSuccess"; approver : _sender; spender : spender; amount : tokens };
+      event e
+    end
+    
+    transition Allowance (tokenOwner : ByStr20, spender : ByStr20)
+      spender_allowance <- allowed[tokenOwner][spender];
+      match spender_allowance with
+      | Some n =>
+          e = { _eventname : "AllowanceResponse"; owner : tokenOwner; spender : spender; amount : n };
+          event e
+      | None =>
+          e = { _eventname : "AllowanceResponse"; owner : tokenOwner; spender : spender; amount : zero };
+          event e
+      end
+    end

@@ -1,0 +1,116 @@
+scilla_version 0
+
+contract DaysTally1(organizer:ByStr20)
+
+field mon : Int32 = Int32 0
+field tue : Int32 = Int32 0
+field wed : Int32 = Int32 0
+field thu : Int32 = Int32 0
+field fri : Int32 = Int32 0
+field sat : Int32 = Int32 0
+field sun : Int32 = Int32 0
+field theStatus : String = "" 
+field testVarF : Int32 = Int32 0 
+
+transition AdjustTally(theAmount : Int32, theDay : String)
+   dummyConst1 = Int32 4 ; 
+   monday = "mon" ; 
+   tuesday = "tue" ;
+   wednesday = "wed";
+   thursday = "thu";
+   friday = "fri";
+   saturday = "sat";
+   sunday = "sun";
+
+   dummyVar1 = Int32 0 ; 
+  
+   exclmMonday = "It's Monday!";
+   exclmTuesday = "It's Tuesday!"; 
+   exclmWednesday = "It's Wednesday!"; 
+   exclmThursday = "It's Thursday!"; 
+   exclmFriday = "It's Friday!"; 
+   exclmSaturday = "It's Saturday!"; 
+   exclmSunday = "It's Sunday!"; 
+   exclmBad = "Bad Entry!"; 
+   
+   its_monday = builtin eq monday theDay;
+   its_tuesday = builtin eq tuesday theDay; 
+   its_wednesday = builtin eq wednesday theDay; 
+   its_thursday = builtin eq thursday theDay; 
+   its_friday = builtin eq friday theDay; 
+   its_saturday = builtin eq saturday theDay; 
+   its_sunday = builtin eq sunday theDay; 
+   
+   theStatus := exclmBad; 
+   
+   match its_monday with
+     | True =>
+       theStatus := exclmMonday;
+       dayPrev <- mon;
+       dayNew = builtin add dayPrev theAmount;
+       mon := dayNew 
+     | False =>
+       dummyVar1 = dummyConst1 
+    end  ;
+    
+    match its_tuesday with
+     | True =>
+       theStatus := exclmTuesday;
+       dayPrev <- tue;
+       dayNew = builtin add dayPrev theAmount;
+       tue := dayNew 
+     | False =>
+       dummyVar1 = dummyConst1 
+    end  ;
+       
+       match its_wednesday with
+     | True =>
+       theStatus := exclmWednesday;
+       dayPrev <- wed;
+       dayNew = builtin add dayPrev theAmount;
+       wed := dayNew 
+     | False =>
+       dummyVar1 = dummyConst1 
+    end  ;
+       
+       match its_thursday with
+     | True =>
+       theStatus := exclmThursday;
+       dayPrev <- thu;
+       dayNew = builtin add dayPrev theAmount;
+       thu := dayNew 
+     | False =>
+       dummyVar1 = dummyConst1 
+    end  ;
+       
+       match its_friday with
+     | True =>
+       theStatus := exclmFriday;
+       dayPrev <- fri;
+       dayNew = builtin add dayPrev theAmount;
+       fri := dayNew 
+     | False =>
+       dummyVar1 = dummyConst1 
+    end  ;
+       
+       match its_saturday with
+     | True =>
+       theStatus := exclmSaturday;
+       dayPrev <- sat;
+       dayNew = builtin add dayPrev theAmount;
+       sat := dayNew 
+     | False =>
+       dummyVar1 = dummyConst1 
+    end  ;
+       
+       match its_sunday with
+     | True =>
+       theStatus := exclmSunday;
+       dayPrev <- sun;
+       dayNew = builtin add dayPrev theAmount;
+       sun := dayNew 
+     | False =>
+       dummyVar1 = dummyConst1 
+    end  
+  
+end

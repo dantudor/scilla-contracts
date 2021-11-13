@@ -1,0 +1,26 @@
+scilla_version 0
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+library RIPLWL
+let one = Uint256 1
+let tt = True
+contract RIPLWL
+()
+field respect_counter : Uint256 = Uint256 0
+field respect_map : Map ByStr20 Bool = Emp ByStr20 Bool
+transition payRespect(m1 : String, m2 : String)
+  has_paid_respect <- exists respect_map[_sender];
+  current_respect_count <- respect_counter;
+  match has_paid_respect with
+  | True =>
+    e = {_eventname : "RespectAlreadyPaid"; current_respect_count: current_respect_count; msg1: m1; msg2: m2};
+    event e
+  | False =>
+    new_respect_count = builtin add current_respect_count one;
+    respect_map[_sender] := tt;
+    respect_counter := new_respect_count;
+    e = {_eventname : "RespectRegistered"; shoutout : "Wuhan Jiayou!"; new_respect_count: new_respect_count;msg1: m1; msg2: m2};
+    event e
+  end
+end

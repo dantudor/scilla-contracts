@@ -1,0 +1,119 @@
+scilla_version 0
+
+import ListUtils
+
+(***************************************************)
+(*               Scan Contract                     *)
+(***************************************************)
+
+library ScanContract
+
+let zero = Uint128 0
+
+(* helper methods *)
+let one_msg = 
+  fun (msg : Message) => 
+  let nil_msg = Nil {Message} in
+  Cons {Message} msg nil_msg
+
+(* Error codes *)
+type Error =
+| CodeNotOwner
+| CodeScanAlreadyRecorded
+
+let make_error =
+  fun (result: Error) =>
+    let result_code = 
+      match result with
+      | CodeNotOwner            => Int32 -1
+      | CodeScanAlreadyRecorded => Int32 -2
+      end
+    in
+    { _exception : "Error"; code : result_code }
+
+(***************************************************)
+(*             The contract definition             *)
+(***************************************************)
+
+contract ScanContract
+(
+owner: ByStr20
+)
+
+field admin : ByStr20 = owner
+
+field last_scan_id: Uint32 = Uint32 0        
+field scans_ : Map String (Map Uint32 String) = Emp String (Map Uint32 String)    
+
+(* users ledger; uid:address *)
+field users : Map String ByStr20 = Emp String ByStr20 
+
+(**************************************)
+(*             Procedures             *)
+(**************************************)
+
+procedure ThrowError(err: Error)
+  e = make_error err;
+  throw e
+end
+
+procedure IsAdmin()
+  current_admin <- admin;
+  is_owner = builtin eq current_admin _sender;
+  match is_owner with
+  | True =>
+  | False =>
+    err = CodeNotOwner;
+    ThrowError err
+  end
+end
+
+(***************************************)
+(*             Transitions             *)
+(***************************************)
+
+(* Add Scan method *)
+(* Params: uid of user (String), metadata of scan serialized (String) *)
+transition RecordScan(uid: String, id: Uint32, metadata: String)
+  IsAdmin;
+
+  lsId <- last_scan_id;
+
+  new_scan_id = let one = Uint32 1 in builtin add lsId one;
+  last_scan_id = new_scan_id;
+  (* currently won't use; i'd like to keep indexing this though *)
+
+  scan <- scans_[uid][id];
+  match scan with
+  | None => 
+    scans_[uid][id] := metadata;
+
+    msg_to_sender = {_tag : "RecordScanCallBack"; _recipient : _sender; _amount : zero; 
+                uid : uid; id : id};
+    msgs = one_msg msg_to_sender;
+    send msgs
+  | Some val => 
+    err = CodeScanAlreadyRecorded;
+    ThrowError err
+  end
+end
+
+(* allow unique storage of user_id : wallet address mapping *)
+transition RecordUser(uid: String, wallet: ByStr20)
+  IsAdmin;
+
+  users[uid] := wallet;
+
+  e = {_eventname : "RecordUserSuccess"; sender : _sender; uid : uid; wallet : wallet};
+  event e 
+end
+
+(* re-assign owner *)
+transition TransferOwnership(newOwner : ByStr20)
+  IsAdmin;
+
+  admin := newOwner;
+
+  e = {_eventname : "TransferOwnershipSuccess"; newOwner : newOwner};
+  event e
+end

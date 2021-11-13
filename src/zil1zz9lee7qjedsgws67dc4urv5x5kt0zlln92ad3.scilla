@@ -1,0 +1,180 @@
+scilla_version 0
+
+(* Proxy contract to be used by Xfers *)
+
+import BoolUtils IntUtils
+
+library ProxyContract
+
+let zero = Uint128 0
+
+(* returns singleton List Message *)
+let one_msg =
+    fun (msg : Message) =>
+        let nil_msg = Nil {Message} in
+        Cons {Message} msg nil_msg
+
+(***************************************************)
+(*             The contract definition             *)
+(***************************************************)
+
+contract ProxyContract
+(
+init_implementation : ByStr20,
+init_admin : ByStr20
+)
+
+field implementation : ByStr20 = init_implementation
+field admin : ByStr20 = init_admin
+
+transition upgradeTo(newImplementation : ByStr20)
+    currentAdmin <- admin;
+    isAdmin = builtin eq currentAdmin _sender;
+    match isAdmin with
+    | True =>
+      implementation := newImplementation;
+      e = {_eventname : "Upgraded"; implementation_address : newImplementation};
+      event e
+    | False =>
+      e = {_eventname : "upgradeTo FailedNotAdmin"; newImplementation : newImplementation};
+      event e
+    end
+end
+
+transition changeAdmin(newAdmin : ByStr20)
+    currentAdmin <- admin;
+    isAdmin = builtin eq currentAdmin _sender;
+    match isAdmin with
+    | True =>
+      admin := newAdmin;
+      e = {_eventname : "AdminChanged"; oldAdmin : currentAdmin; newAdmin : newAdmin};
+      event e
+    | False =>
+      e = {_eventname : "changeAdmin FailedNotAdmin"; newAdmin : newAdmin};
+      event e
+    end
+end
+
+transition proxyTransferOwnership(newOwner : ByStr20)
+    current_impl <- implementation;
+    msg = {_tag : "transferOwnership"; _recipient : current_impl; _amount : zero;
+           newOwner : newOwner; initiator : _sender};
+    msgs = one_msg msg;
+    send msgs
+end
+
+transition proxyPause()
+    current_impl <- implementation;
+    msg = {_tag : "pause"; _recipient : current_impl; _amount : zero; initiator : _sender};
+    msgs = one_msg msg;
+    send msgs
+end
+
+transition proxyUnPause()
+    current_impl <- implementation;
+    msg = {_tag : "unpause"; _recipient : current_impl; _amount : zero; initiator : _sender};
+    msgs = one_msg msg;
+    send msgs
+end
+
+transition proxyUpdatePauser(newPauser : ByStr20)
+    current_impl <- implementation;
+    msg = {_tag : "updatePauser"; _recipient : current_impl; _amount : zero;
+           newPauser : newPauser; initiator : _sender};
+    msgs = one_msg msg;
+    send msgs
+end
+
+transition proxyBlacklist(address : ByStr20)
+    current_impl <- implementation;
+    msg = {_tag : "blacklist"; _recipient : current_impl; _amount : zero;
+           address : address; initiator : _sender};
+    msgs = one_msg msg;
+    send msgs
+end
+
+transition proxyUnBlacklist(address : ByStr20)
+    current_impl <- implementation;
+    msg = {_tag : "unBlacklist"; _recipient : current_impl; _amount : zero;
+           address : address; initiator : _sender};
+    msgs = one_msg msg;
+    send msgs
+end
+
+transition proxyUpdateBlacklister(newBlacklister : ByStr20)
+    current_impl <- implementation;
+    msg = {_tag : "updateBlacklister"; _recipient : current_impl; _amount : zero;
+           newBlacklister : newBlacklister; initiator : _sender};
+    msgs = one_msg msg;
+    send msgs
+end
+
+transition proxyMint(to: ByStr20, value : Uint128 )
+    current_impl <- implementation;
+    msg = {_tag : "mint"; _recipient : current_impl; _amount : zero; to : to;
+           value : value; initiator : _sender};
+    msgs = one_msg msg;
+    send msgs
+end
+
+transition proxyApprove (spender : ByStr20, value : Uint128)
+    current_impl <- implementation;
+    msg = {_tag : "approve"; _recipient : current_impl; _amount : zero;
+           spender : spender; value : value; initiator : _sender};
+    msgs = one_msg msg;
+    send msgs
+end
+
+transition proxyTransferFrom (from : ByStr20, to : ByStr20, value : Uint128)
+    current_impl <- implementation;
+    msg = {_tag : "transferFrom"; _recipient : current_impl; _amount : zero;
+           from : from; to : to; value : value; initiator : _sender};
+    msgs = one_msg msg;
+    send msgs
+end
+
+transition proxyTransfer (to : ByStr20, value : Uint128)
+    current_impl <- implementation;
+    msg = {_tag : "transfer"; _recipient : current_impl; _amount : zero; to : to;
+           value : value; initiator : _sender};
+    msgs = one_msg msg;
+    send msgs
+end
+
+transition proxyBurn(value : Uint128)
+    current_impl <- implementation;
+    msg = {_tag : "burn"; _recipient : current_impl; _amount : zero; value : value; initiator : _sender};
+    msgs = one_msg msg;
+    send msgs
+end
+
+transition proxyLawEnforcementWipingBurn(address : ByStr20)
+    current_impl <- implementation;
+    msg = {_tag : "lawEnforcementWipingBurn"; _recipient : current_impl; _amount : zero; address : address; initiator : _sender};
+    msgs = one_msg msg;
+    send msgs
+end
+
+transition proxyConfigureMinter(minter : ByStr20, minterAllowedAmount : Uint128)
+    current_impl <- implementation;
+    msg = {_tag : "configureMinter"; _recipient : current_impl; _amount : zero; minter : minter;
+           minterAllowedAmount : minterAllowedAmount; initiator : _sender};
+    msgs = one_msg msg;
+    send msgs
+end
+
+transition proxyRemoveMinter(minter : ByStr20)
+    current_impl <- implementation;
+    msg = {_tag : "removeMinter"; _recipient : current_impl; _amount : zero; minter : minter;
+           initiator : _sender};
+    msgs = one_msg msg;
+    send msgs
+end
+
+transition proxyUpdateMasterMinter(newMasterMinter : ByStr20)
+    current_impl <- implementation;
+    msg = {_tag : "updateMasterMinter"; _recipient : current_impl; _amount : zero; newMasterMinter : newMasterMinter;
+           initiator : _sender};
+    msgs = one_msg msg;
+    send msgs
+end

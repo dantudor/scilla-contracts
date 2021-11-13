@@ -1,0 +1,97 @@
+scilla_version 0
+
+contract TestMain(testSecond: ByStr20)
+
+transition start(counter: Uint256)
+  one = Uint256 1;
+  stop_recursion = builtin lt counter one;
+  e = {_eventname: "start"; sender: _sender; counter: counter};
+  event e;
+  match stop_recursion with
+  | True =>
+  | False =>
+    new_counter = builtin sub counter one;
+    nil_msg = Nil {Message};
+    msg = {_tag : "DoWork"; _recipient : testSecond; _amount : Uint128 0; counter : new_counter; where: _this_address};
+    msgs = Cons {Message} msg nil_msg;
+    send msgs
+  end
+end
+
+transition startDuble(counter: Uint256)
+  one = Uint256 1;
+  stop_recursion = builtin lt counter one;
+  e = {_eventname: "startDuble"; sender: _sender; counter: counter};
+  event e;
+  match stop_recursion with
+  | True =>
+  | False =>
+    new_counter = builtin sub counter one;
+    nil_msg = Nil {Message};
+    msg = {_tag : "DoWork1"; _recipient : testSecond; _amount : Uint128 0; counter : new_counter; where: _this_address};
+    msgs = Cons {Message} msg nil_msg;
+    msg = {_tag : "BlaBla"; _recipient : testSecond; _amount : Uint128 0; counter : new_counter};
+    msgs = Cons {Message} msg msgs;
+    send msgs
+  end
+end
+
+transition startBlaBlaOnly(counter: Uint256)
+  ten = Uint256 10;
+  is_gt_ten = builtin lt ten counter;
+  match is_gt_ten with
+  | True =>
+    nil_msg = Nil {Message};
+    msg = {_tag : "BlaBla"; _recipient : testSecond; _amount : Uint128 0; counter : Uint256 1};
+    msgs = Cons {Message} msg nil_msg;
+    msg = {_tag : "BlaBla"; _recipient : testSecond; _amount : Uint128 0; counter : Uint256 2};
+    msgs = Cons {Message} msg msgs;
+    msg = {_tag : "BlaBla"; _recipient : testSecond; _amount : Uint128 0; counter : Uint256 3};
+    msgs = Cons {Message} msg msgs;
+    msg = {_tag : "BlaBla"; _recipient : testSecond; _amount : Uint128 0; counter : Uint256 4};
+    msgs = Cons {Message} msg msgs;
+    msg = {_tag : "BlaBla"; _recipient : testSecond; _amount : Uint128 0; counter : Uint256 5};
+    msgs = Cons {Message} msg msgs;
+    msg = {_tag : "BlaBla"; _recipient : testSecond; _amount : Uint128 0; counter : Uint256 6};
+    msgs = Cons {Message} msg msgs;
+    msg = {_tag : "BlaBla"; _recipient : testSecond; _amount : Uint128 0; counter : Uint256 7};
+    msgs = Cons {Message} msg msgs;
+    msg = {_tag : "BlaBla"; _recipient : testSecond; _amount : Uint128 0; counter : Uint256 8};
+    msgs = Cons {Message} msg msgs;
+    msg = {_tag : "BlaBla"; _recipient : testSecond; _amount : Uint128 0; counter : Uint256 9};
+    msgs = Cons {Message} msg msgs;
+    msg = {_tag : "BlaBla"; _recipient : testSecond; _amount : Uint128 0; counter : Uint256 10};
+    msgs = Cons {Message} msg msgs;
+    msg = {_tag : "BlaBla"; _recipient : testSecond; _amount : Uint128 0; counter : Uint256 11};
+    msgs = Cons {Message} msg msgs;
+    send msgs
+    (*
+    msg = {_tag : "BlaBla"; _recipient : testSecond; _amount : Uint128 0; counter : Uint256 12};
+    msgs = Cons {Message} msg msgs;
+    msg = {_tag : "BlaBla"; _recipient : testSecond; _amount : Uint128 0; counter : Uint256 13};
+    msgs = Cons {Message} msg msgs; *)
+  | False =>
+    nil_msg = Nil {Message};
+    msg = {_tag : "BlaBla"; _recipient : testSecond; _amount : Uint128 0; counter : Uint256 1};
+    msgs = Cons {Message} msg nil_msg;
+    msg = {_tag : "BlaBla"; _recipient : testSecond; _amount : Uint128 0; counter : Uint256 2};
+    msgs = Cons {Message} msg msgs;
+    msg = {_tag : "BlaBla"; _recipient : testSecond; _amount : Uint128 0; counter : Uint256 3};
+    msgs = Cons {Message} msg msgs;
+    msg = {_tag : "BlaBla"; _recipient : testSecond; _amount : Uint128 0; counter : Uint256 4};
+    msgs = Cons {Message} msg msgs;
+    msg = {_tag : "BlaBla"; _recipient : testSecond; _amount : Uint128 0; counter : Uint256 5};
+    msgs = Cons {Message} msg msgs;
+    msg = {_tag : "BlaBla"; _recipient : testSecond; _amount : Uint128 0; counter : Uint256 6};
+    msgs = Cons {Message} msg msgs;
+    msg = {_tag : "BlaBla"; _recipient : testSecond; _amount : Uint128 0; counter : Uint256 7};
+    msgs = Cons {Message} msg msgs;
+    msg = {_tag : "BlaBla"; _recipient : testSecond; _amount : Uint128 0; counter : Uint256 8};
+    msgs = Cons {Message} msg msgs;
+    msg = {_tag : "BlaBla"; _recipient : testSecond; _amount : Uint128 0; counter : Uint256 9};
+    msgs = Cons {Message} msg msgs;
+    msg = {_tag : "BlaBla"; _recipient : testSecond; _amount : Uint128 0; counter : Uint256 10};
+    msgs = Cons {Message} msg msgs;
+    send msgs
+  end
+end

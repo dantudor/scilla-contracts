@@ -1,0 +1,113 @@
+scilla_version 0
+
+(************************************************************************)
+(* Cerchia Test Oracle: Cerchia can set levels                          *)
+(*       offers: get_level(ds : String)                                 *)
+(*          which will call back the _sender's                          *)
+(*               callback_level(level: Option Uint128)                  *)
+(*          where level is Some Uint128 if a level exists for           *)
+(*                            the date yyyy-mm-dd                       *)
+(*                         None otherwise)                              *)
+(*       cerchia can add a level for a date yyyy-mm-dd                  *)
+(*                   delete a level for a date (eg, if level is wrong   *)
+(************************************************************************)
+
+import IntUtils
+
+(*               Associated library                *)
+library CerchiaTestOracle
+let zero = Uint128 0 (* will not send any amount *)
+
+(* Wrap single message into singleton list *)
+let one_msg =
+  fun (msg : Message) =>
+    let nil_msg = Nil {Message} in
+    Cons {Message} msg nil_msg
+
+(*               The Smart Contract                *)
+contract CerchiaTestOracle
+(cerchia_at_deployment: ByStr20) (* immutable *)
+
+(* mutable fields declarations *)
+field cerchia : ByStr20 = cerchia_at_deployment (* the current address of cerchia. Can be updated by cerchia *)
+field levels: Map String Uint32 = Emp String Uint32
+
+(* throw errors depending on the specific case *)
+procedure throw_if_not_cerchia(sender: ByStr20)
+  c <- cerchia;
+  is_cerchia = builtin eq _sender c;
+  match is_cerchia with
+  | False =>
+    ev = {_eventname: "throw_if_not_cerchia"; sender: _sender; cerchia: c};
+    event ev;
+    err = { _exception : "Action Can Only Be Performed By The Owner (Cerchia)"};
+    throw err
+  | True =>
+  end
+end
+
+(* check a date string yyyy-mm-dd and throw if length is not 10*)
+procedure throw_if_wrong_ds_length(ds: String)
+  l = builtin strlen ds;
+  ten = Uint32 10;
+  is_ok = uint32_eq l ten;
+  match is_ok with
+  | False =>
+    err = {_exception: "date string INVALID must have length 10"}; throw err
+  | True => (* length is ok, nothing to do here: proceed *)
+  end
+end
+
+(* @notice: ask for a level at date = yyyy-mm-dd.                  *)
+(*    _sender needs to offer callback_level(level: Option Uint128) *)
+(* @param:  ds : date string of the form yyyy-mm-dd                *)
+transition get_level(ds: String)
+  throw_if_wrong_ds_length ds;
+  the_level <- levels[ds];
+  e = {_eventname : "get_level"; date_string: ds; level: the_level};
+  event e;
+  msg = {_tag: "callback_level"; _recipient: _sender; _amount: zero; level: the_level};
+  msgs = one_msg msg;
+  send msgs
+end
+
+
+(* @notice: The owner cerchia can add levels for specific dates    *)
+(* @param:  ds : date string of the form yyyy-mm-dd                *)
+(* @level:  index level at date ds = yyyy-mm-dd                    *)
+transition add_level(ds: String, level: Uint32)
+  throw_if_not_cerchia _sender;
+  throw_if_wrong_ds_length ds;
+  levels[ds] := level;
+  e = {_eventname : "add_level"; date_string: ds; level: level};
+  event e
+end
+
+
+(* @notice: The owner cerchia can delete an entry for a  date       *)
+(*          if no entry exists, no action is taken                  *)
+(* @param:  ds : date string of the form yyyy-mm-dd                 *)
+transition delete_level(ds: String)
+  throw_if_not_cerchia _sender;
+  throw_if_wrong_ds_length ds;
+  ex <- exists levels[ds];
+  match ex with
+  |True =>
+    delete levels[ds];
+    e = {_eventname : "delete_level: deleted"; date_string: ds};
+    event e
+  |False =>
+    e = {_eventname : "delete_level: no level for date"; date_string: ds};
+    event e
+  end (* match ex *)
+end
+
+
+(* @notice: The owner cerchia can update its own address *)
+(* @param:  address : cerchia's new address *)
+transition set_cerchia(address : ByStr20)
+  throw_if_not_cerchia _sender;
+  cerchia := address;
+  e = {_eventname : "set_cerchia(.) - updated"; new_address: address};
+  event e
+end

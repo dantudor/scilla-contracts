@@ -1,0 +1,326 @@
+scilla_version 0
+
+import BoolUtils
+library Exchange
+let zero_address = 0x0000000000000000000000000000000000000000
+let zero = Uint128 0
+
+let one_msg =
+  fun (msg: Message) =>
+  let nil_msg = Nil {Message} in
+  Cons {Message} msg nil_msg
+
+(* error codes library *)
+let code_success = Uint32 0
+let code_order_expired = Uint32 1
+let code_order_filled = Uint32 2
+let code_order_canceld = Uint32 3
+let code_insufficient_balance = Uint32 4
+let code_wrong_takeaddr = Uint32 5
+let code_signature_error = Uint32 6
+let code_wrong_makeraddr = Uint32 7
+let fee_base = Uint128 100
+
+            
+
+(*     Order{ makerAddr,contractAddr,nftId,expires,tokenAmount,sign publickey) *)
+(*     OrderHash = Hash(Order) *)
+(*    if anyone can provide the sign of OrderHash by publickey,then *)
+            
+            
+let get_order_hash2 =
+    fun(markerAddr:ByStr20) =>
+    fun(takerAddr:ByStr20) =>
+    fun(contractAddr:ByStr20)=>
+    fun(nftId:Uint256)=>
+    fun(tokenAmount:Uint128)=>
+    fun(expires:Int256) =>    
+        let hmaker = builtin keccak256hash markerAddr in
+            let htaker = builtin keccak256hash takerAddr in
+                let hcontract = builtin keccak256hash contractAddr in
+                    let hnftid = builtin keccak256hash nftId in
+                        let hamount = builtin keccak256hash tokenAmount in
+                            let hexpires =  builtin keccak256hash expires in
+                                let hash1 = builtin concat hmaker htaker in
+                                    let hash2 = builtin concat hash1 hcontract in
+                                        let hash3 = builtin concat hash2 hnftid in
+                                            let hash4 = builtin concat hash3 hamount in
+                                                let hash5 = builtin concat hash4 hexpires in
+                                                    builtin keccak256hash hash5
+
+let pubKeyAddressCheck = 
+    fun(pubkey:ByStr33) =>
+        fun(address:ByStr20) =>
+            fun(addrMissingPart:ByStr12) =>
+                let mergeHash = builtin concat addrMissingPart address in
+                    let pubkeyHash = builtin sha256hash pubkey in
+                        let mergeToUint256 = builtin to_uint256 mergeHash in
+                            let pubkeyHashToUint256 = builtin to_uint256 pubkeyHash in
+                                builtin eq mergeToUint256 pubkeyHashToUint256
+                        
+
+    
+let get_order_hash =
+    fun(markerAddr:ByStr20) =>
+    fun(takerAddr:ByStr20) =>
+    fun(contractAddr:ByStr20)=>
+    fun(nftId:Uint256)=>
+    fun(tokenAmount:Uint128)=>
+    fun(expires:Int256) =>    
+        let nftId_bystr = builtin keccak256hash nftId in
+         let tokenAmount_bystr = builtin keccak256hash tokenAmount in
+            let expires_bystr = builtin keccak256hash expires in
+                let hash1 = builtin concat markerAddr takerAddr in
+                    let hash2 = builtin concat hash1 contractAddr in
+                        let hash3 = builtin concat hash2 nftId_bystr in
+                            let hash4 = builtin concat hash3 tokenAmount_bystr in
+                                let hash5 = builtin concat hash4 expires_bystr in
+                                    builtin keccak256hash hash5
+
+
+
+
+let isZeroOrExpectedAddress = 
+    fun(address:ByStr20) =>    
+      fun(expected:ByStr20) =>    
+        let isZeroAddress = builtin eq zero_address address in
+            let isSpecifiAddress = builtin eq expected address in
+                orb isZeroAddress isSpecifiAddress 
+                   
+                
+                
+                
+let isValidSignature = 
+    fun(pub_key:ByStr33) =>
+    fun(hash:ByStr32) =>    
+    fun(sig: ByStr64) => 
+        let hash_bystr = builtin to_bystr hash in
+            builtin schnorr_verify pub_key hash_bystr sig 
+                
+       
+
+        
+let isBlkLessthan =
+  fun(ba:Int256) =>
+    fun(bb:BNum) =>
+      let b0 = BNum 0 in
+        let bbToInt256 = builtin bsub bb b0 in
+             builtin lt ba bbToInt256
+
+
+     
+contract Exchange(contractOwner : ByStr20)
+
+field contract_pending : ByStr20 = zero_address
+field maker_pending : ByStr20 = zero_address
+field real_taker_pending : ByStr20 = zero_address
+field nftId_pending : Uint256 = Uint256 0
+field amount_pending : Uint128 = zero
+
+field feeRatio : Uint128 = Uint128 0 (**)
+
+transition setFeeRatio(fee:Uint128)  
+  isOwner = builtin eq _sender contractOwner;
+  match isOwner with
+  | True =>
+    e = {_eventname:"SetFee"; fee: fee};
+    event e;
+    feeRatio := fee
+  | False =>
+  end
+
+end
+transition withdraw()  
+  isOwner = builtin eq _sender contractOwner;
+  bal <- _balance;
+  match isOwner with
+  | True =>
+    e = {_eventname:"WithDraw"; amount: bal};
+    event e;
+    msg = { _tag: "Main";
+            _recipient: contractOwner ;
+            _amount: bal };
+    msgs = one_msg msg;
+    send msgs
+  | False =>
+  (* nothing *)
+  end
+end
+
+transition fillOrder(markerPubKey:ByStr33,markerAddr:ByStr20,missingHash:ByStr12, takerAddr:ByStr20 ,contractAddr:ByStr20,nftId:Uint256,tokenAmount:Uint128,signature:ByStr64,expires:Int256)
+    
+    (* Check _amount satisfied *)
+    accept;
+    amountNotStatisfied = builtin lt _amount tokenAmount  ;
+    blk <- & BLOCKNUMBER;
+    match amountNotStatisfied with
+    |  True =>
+       e = {_eventname: "fillOrder"; code :code_insufficient_balance; want: tokenAmount; real: _amount };
+       event e
+    | False =>
+      (* Check _taker satisfied *)
+      takeAddrStatisfied = isZeroOrExpectedAddress  takerAddr _sender;
+      match takeAddrStatisfied with
+      |  False =>
+         e = {_eventname: "fillOrder1"; code : code_wrong_takeaddr;wantAddr: takerAddr; realAddr: _sender };
+         event e
+      | True =>
+          (* Check not expires *)
+          isInTime = isBlkLessthan expires  blk ;
+          match isInTime with
+          |  True =>
+            e = {_eventname: "fillOrder2"; code : code_order_expired ; want: expires; real: blk };
+            event e
+          | False =>
+          (* Check signature satisfied *)
+            isMakerAddrOk = pubKeyAddressCheck markerPubKey markerAddr missingHash;
+            match isMakerAddrOk  with
+            | False => 
+              e = {_eventname: "fillOrder3"; code : code_wrong_makeraddr  };
+              event e
+            | True =>
+              hash =  get_order_hash markerAddr takerAddr contractAddr nftId tokenAmount expires; 
+              isSigValid = isValidSignature markerPubKey hash signature;
+           
+              match isSigValid with
+              |  False =>
+                e = {_eventname: "fillOrder4"; code : code_signature_error ; hash: hash };
+                event e
+              | True =>
+    
+                e = {_eventname: "fillOrder5"; code : code_success  };
+                event e;
+                (* At last we come here*)
+                (* reset pending status ; so the contract here must insure TransferFrom has expected returns*)
+                contract_pending := contractAddr;
+                amount_pending := _amount;
+                nftId_pending := nftId;
+                real_taker_pending := _sender;
+                maker_pending := markerAddr;
+                (* async transferFrom ; Must be TransferFromSuccessResponse / TransferFromFailureResponse *)
+                msg = {_tag: "transferFrom";
+                            _recipient: contractAddr;
+                            _amount: Uint128 0;
+                            from: markerAddr;
+                            to : _sender;
+                            tokenId:nftId };
+                            
+                msgs = one_msg msg;
+                send msgs
+              end
+            end
+          end
+      end
+    end
+    
+    
+    
+    
+end
+
+
+transition TransferFromSuccessResponse(tokenId:Uint256)
+    c_p <- contract_pending;
+    nftTransferd = builtin eq c_p _sender;
+    e = {_eventname: "TransferFromSuccessResponse"};
+    event e;
+    match nftTransferd with
+    | True =>
+        (* Transfer amount to maker*)
+        amount <- amount_pending;
+        feeRatioVal <- feeRatio;
+        feeUnit = builtin div amount fee_base;
+        fee = builtin mul feeRatioVal feeUnit;
+
+        real_amount = builtin sub amount fee;
+        makerAddr <- maker_pending;
+        (* Reset value *)
+        contract_pending := zero_address;
+        msg = { _tag: "Main";
+                _recipient: makerAddr;
+                _amount: real_amount };
+        msgs = one_msg msg;
+        send msgs
+    | False =>
+        (* Do nothing  *)
+    end
+end
+
+transition TransferFromFailureResponse(tokenId:Uint256)
+    c_p <- contract_pending;
+    nftTransferd = builtin eq c_p _sender;
+    e = {_eventname: "TransferFromFailureResponse"};
+    event e;
+    match nftTransferd with
+    | True =>
+        (* Return amount to real_taker*)
+        amount <- amount_pending;
+        realTaker <- real_taker_pending;
+        (* Reset value *)
+        contract_pending := zero_address;
+        msg = { _tag: "Main";
+                _recipient: realTaker;
+                _amount: amount };
+        msgs = one_msg msg;
+        send msgs
+    | False =>
+        (* Do nothing  *)
+    end
+end
+
+(* for test *)
+transition getOrderHash(markerAddr:ByStr20,takerAddr:ByStr20 ,contractAddr:ByStr20,nftId:Uint256,tokenAmount:Uint128,expires:Int256)
+    hash = get_order_hash markerAddr takerAddr contractAddr nftId tokenAmount expires ;
+    e = {_eventname: "getOrderHash"; hash :hash};
+    event e
+end
+
+transition hashAddr(addr : ByStr20)
+    hash = builtin keccak256hash addr;
+    e = {_eventname: "getOrderHa"; hash :hash};
+    event e
+end
+
+transition hashAddr2(addr : ByStr20,addr2 :ByStr20)
+    addrs = builtin concat addr addr2;
+    hash = builtin keccak256hash addrs;
+    e = {_eventname: "hashAddr2"; hash :hash;addrs : addrs};
+    event e
+end
+
+transition hashBignum(n : BNum)
+    hash = builtin keccak256hash n;
+    e = {_eventname: "hashBignum"; hash :hash};
+    event e
+end
+transition hashUint256(n : Uint256)
+    hash = builtin keccak256hash n;
+    e = {_eventname: "hashUint256"; hash :hash};
+    event e
+end
+transition hashUint128(n : Uint128)
+    hash = builtin keccak256hash n;
+    e = {_eventname: "hashUint128"; hash :hash};
+    event e
+end
+transition hashUint32(n : Uint32)
+    hash = builtin keccak256hash n;
+    e = {_eventname: "hashUint128"; hash :hash};
+    event e
+end
+
+
+
+
+
+transition pubKeyAddressCheck(pubkey:ByStr33, address:ByStr20, addrMissingPart:ByStr12)
+    mergeHash = builtin concat addrMissingPart address;
+    pkHash =  builtin sha256hash pubkey ;
+    mergeToUint256 = builtin to_uint256 mergeHash ;
+    pubkeyHashToUint256 = builtin to_uint256 pkHash;
+    res = pubKeyAddressCheck pubkey address addrMissingPart;
+    e = {_eventname: "pubKeyAddressCheck"; res :res; mergeHash :mergeHash;pkHash :pkHash; mergeToUint256:mergeToUint256; pubkeyHashToUint256:pubkeyHashToUint256 };
+    event e
+end
+
+

@@ -1,0 +1,1322 @@
+scilla_version 0
+
+(***************************************************)
+(* Cerchia contract: match and pay.                *)
+(*       offers: bid, ask, cancel, match           *)
+(***************************************************)
+
+import ListUtils IntUtils BoolUtils
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+library CerchiaMnP
+
+(**********************************************************)
+(* Dates library: copied here as I can't deploy it yet    *)
+(* A date is a triple (yyyy, m[m], d[d])                  *)
+(* to copy into contracts that operate with/on Date types *)
+(**********************************************************)
+(* library DatesLib *)
+
+type Date = | Date of Uint32 Uint32 Uint32 (* yyyy, m[m], d[d] *)
+
+let dl_zero32 = Uint32 0
+let dl_one32 = Uint32 1
+let dl_two32 = Uint32 2
+
+(* 1st Jan 1999 as default date *)
+let default_date =
+  let y = Uint32 1900 in
+  Date y dl_one32 dl_one32
+
+(* check if a date is valid. Not checking for different days in month, just that <= 31 *)
+let is_valid = fun (d: Date) =>
+  match d with
+  | Date y m d =>
+    let min_year = Uint32 2019 in
+    let max_year = Uint32 9999 in
+    let max_month = Uint32 12 in
+    let max_day = Uint32 31 in
+    let y_ok1 = uint32_ge y min_year in (* 2019 <= y <= 9999 ? *)
+    let y_ok2 = uint32_le y max_year in
+    let y_ok = andb y_ok1 y_ok2 in
+    let m_ok1 = uint32_ge m dl_one32 in (* 1 <= m <= 12 ? *)
+    let m_ok2 = uint32_le m max_month in
+    let m_ok = andb m_ok1 m_ok2 in
+    let d_ok1 = uint32_ge d dl_one32 in (* 1 <= d <= 31 ? *)
+    let d_ok2 = uint32_le d max_day in
+    let d_ok = andb d_ok1 d_ok2 in
+    let ym_ok = andb y_ok m_ok in
+    andb ym_ok d_ok
+  end
+
+(* convert to zero padded strings *)
+let int2str = fun (int: Uint32) =>
+  let ten = Uint32 10 in
+  let needs_zero_padding = uint32_lt int ten in
+  let str = builtin to_string int in
+  match needs_zero_padding with
+  | True =>
+    let zero = "O" in
+    builtin concat zero str
+  | False =>
+    str
+  end
+
+(* GreaterThan: compare 2 dates and return true if d1 > d2 *)
+let date_gt =
+  fun (date1: Date) =>
+  fun (date2: Date) =>
+  match date1 with
+  | Date y1 m1 d1 =>
+    match date2 with
+    | Date y2 m2 d2 =>
+      let ygt = uint32_gt y1 y2 in
+      match ygt with
+      | True => True
+      | False =>
+        let yeq = uint32_eq y1 y2 in
+        match yeq with
+        | False => False
+        | True => (* need to check month *)
+          let mgt = uint32_gt m1 m2 in
+          match mgt with
+          | True => True
+          | False =>
+            let meq = uint32_eq m1 m2 in
+            match meq with
+            | False => False
+            | True => (* need to check day *)
+              let dgt = uint32_gt d1 d2 in
+              match dgt with
+              | True => True
+              | False => False
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+(* LessThan: compare 2 dates and return true if d1 < d2 *)
+let date_lt =
+  fun (date1: Date) =>
+  fun (date2: Date) =>
+  match date1 with
+  | Date y1 m1 d1 =>
+    match date2 with
+    | Date y2 m2 d2 =>
+      let ylt = uint32_lt y1 y2 in
+      match ylt with
+      | True => True
+      | False =>
+        let yeq = uint32_eq y1 y2 in
+        match yeq with
+        | False => False
+        | True => (* need to check month *)
+          let mlt = uint32_lt m1 m2 in
+          match mlt with
+          | True => True
+          | False =>
+            let meq = uint32_eq m1 m2 in
+            match meq with
+            | False => False
+            | True => (* need to check day *)
+              let dlt = uint32_lt d1 d2 in
+              match dlt with
+              | True => True
+              | False => False
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+(* GreaterthanorEqual: compare 2 dates and return true if d1 >= d2 *)
+let date_ge =
+  fun (date1: Date) =>
+  fun (date2: Date) =>
+  let less_than = date_lt date1 date2 in
+  negb less_than (* if it is < it is NOT >= *)
+
+(* convert a Date type to a date_string yyyy-mm-dd *)
+let as_str = fun(d: Date) =>
+  match d with
+  | Date yyyy mm dd =>
+    let y = builtin to_string yyyy in
+    let m = int2str mm in
+    let d = int2str dd in
+    let hyphen = "-" in
+    let s1 = builtin concat y hyphen in
+    let s2 = builtin concat s1 m in
+    let s3 = builtin concat s2 hyphen in
+    builtin concat s3 d
+  end
+
+(* Helper: create a Uint32 of a possibly zero padded string *)
+let zero_padded_str_to_uint32 = fun(str: String) => (* "0x" => Option x, "xy" => Option xy, failure => None {Uint32} *)
+  let s0 = builtin substr str dl_zero32 dl_one32 in
+  let n0 = builtin to_uint32 s0 in
+  match n0 with
+  | Some value =>
+    let is_0 = builtin eq value dl_zero32 in
+    match is_0 with
+    | True => (* only convert the second digit *)
+      let s1 = builtin substr str dl_one32 dl_one32 in
+        builtin to_uint32 s1
+    | False => (* convert both digits *)
+      builtin to_uint32 str
+    end
+  | None =>
+    None {Uint32}
+  end
+
+(* get the Uint32 of year, month and day from a date_string yyyy-mm-dd: return an Option {Uint32} *)
+let yo_from_ds = fun(str: String) =>
+  let four = Uint32 4 in
+  let ys = builtin substr str dl_zero32 four in
+  builtin to_uint32 ys
+let mo_from_ds = fun(str: String) =>
+  let five = Uint32 5 in
+  let ms = builtin substr str five dl_two32 in
+  zero_padded_str_to_uint32 ms
+let do_from_ds = fun(str: String) =>
+  let eight = Uint32 8 in
+  let ds = builtin substr str eight dl_two32 in
+  zero_padded_str_to_uint32 ds
+
+(* convert a date string to a (Option of a) Date type *)
+let str2Date = fun(str: String) =>
+  let yo = yo_from_ds str in
+  match yo with
+  | None => None {Date}
+  | Some y =>
+    let mo = mo_from_ds str in
+    match mo with
+    | None => None {Date}
+    | Some m =>
+      let do = do_from_ds str in
+      match do with
+      | None => None {Date}
+      | Some d =>
+        let date = Date y m d in
+        Some {Date} date
+      end
+    end
+  end
+(* end of Dates library                                   *)
+(**********************************************************)
+
+(* 1st Jan 1999 as default date *)
+let default_date =
+  let y = Uint32 1900 in
+  Date y dl_one32 dl_one32
+(* often used numbers *)
+let zero32 = Uint32 0
+let zero128 = Uint128 0
+let tenthousand128 = Uint128 10000
+
+(** Deal entries are mostly typed to avoid mistakes by wrong order **)
+type State = (* state of a Deal *)
+  | Empty
+  | BidLive
+  | AskLive
+  | Matched
+  | Live
+  | Expired
+  | Triggered
+  | Matured
+  | Terminated
+
+type Denom = (* Amounts: they are n units of a certain denomination *)
+| ZIL (* native *)
+| XSGD (* a token *)
+
+type Premium =  | Premium of Uint128 (* all in "units" of denom *)
+type Notional = | Notional of Uint128
+type Funds =    | Funds of Uint128
+type Strike = | Strike of Uint32
+
+let zero_funds = Funds zero128
+(* the "voucher", i.e. static "Deal" entries *)
+type Voucher = (* denomination, notional [units denom], premium [units denom], strike, Te (expiry), T0 (monitor start), Tm (maturity) *)
+  | Voucher of Denom Notional Premium Strike Date Date Date
+
+(* Addresses of players *)
+type Initiator = | Initiator of ByStr20
+type Buyer = | Buyer of ByStr20
+type Seller = | Seller of ByStr20
+
+(* the main type: a single "Deal" *)
+type Deal = (*  voucher, state, initiator, buyer, seller, funds (of the deal in the sc) *)
+  | Deal of Voucher State (Option Initiator) (Option Buyer) (Option Seller) Funds
+
+let set_initiator = fun (a : ByStr20) =>
+  let actor = Initiator a in
+    Some {Initiator} actor
+let set_buyer = fun (a : ByStr20) =>
+  let actor = Buyer a in
+    Some {Buyer} actor
+let set_seller = fun (a : ByStr20) =>
+  let actor = Seller a in
+    Some {Seller} actor
+
+(* expressions to extract some entries from a Voucher or a Deal and their value *)
+let getV_denom = fun (v: Voucher) =>
+  match v with
+  | Voucher denom notional premium strike te t0 tm => denom
+  end
+let get_voucher = fun (d: Deal) =>
+  match d with
+  | Deal voucher state initiator buyer seller funds => voucher
+  end
+let get_denom = fun (d: Deal) =>
+  match d with
+  | Deal voucher state initiator buyer seller funds => getV_denom voucher
+  end
+let get_state = fun (d : Deal) =>
+  match d with
+  | Deal voucher state initiator buyer seller funds => state
+  end
+let get_initiator = fun (d : Deal) =>
+  match d with
+  | Deal voucher state initiator buyer seller funds => initiator
+  end
+let get_buyer = fun (d : Deal) =>
+  match d with
+  | Deal voucher state initiator buyer seller funds => buyer
+  end
+let get_seller = fun (d : Deal) =>
+  match d with
+  | Deal voucher state initiator buyer seller funds => seller
+  end
+let get_funds = fun (d : Deal) =>
+  match d with
+  | Deal voucher state initiator buyer seller funds => funds
+  end
+
+(* expressions to extract the values of the typed entries *)
+let notional_val = fun (n : Notional) =>
+  match n with
+  | Notional val => val
+  end
+let premium_val = fun (p : Premium) =>
+  match p with
+  | Premium val => val
+  end
+let strike_val = fun (k : Strike) =>
+  match k with
+  | Strike val => val
+  end
+let initiator_val = fun (i : Initiator) =>
+  match i with
+  | Initiator val => val
+  end
+let buyer_val = fun (b : Buyer) =>
+  match b with
+  | Buyer val => val
+  end
+let seller_val = fun (s : Seller) =>
+  match s with
+  | Seller val => val
+  end
+let funds_val = fun (f : Funds) =>
+  match f with
+  | Funds val => val
+  end
+
+(* value needed for an ask: N-P *)
+let notional_minus_premium_val = fun (voucher: Voucher) =>
+    match voucher with
+    | Voucher denom notional premium strike te t0 tm =>
+      let nv = notional_val notional in
+      let pv = premium_val premium in
+      builtin sub nv pv
+    end
+(* a deal can be cancelled if its state is either BidLive or AskLive *)
+let can_be_cancelled = fun (s : State) =>
+  match s with
+  | BidLive => True
+  | AskLive => True
+  | _ => False
+  end
+(* a deal can be terminated if its state is either Matched or Live *)
+let can_be_terminated = fun (s : State) =>
+  match s with
+  | Matched => True
+  | Live => True
+  | _ => False
+  end
+(* create an empty deal: no players set, no funds stored *)
+let empty_deal =
+  fun (voucher: Voucher) =>
+    let state = Empty in
+    let initiator = None {Initiator} in
+    let buyer = None {Buyer} in
+    let seller = None {Seller} in
+      Deal voucher state initiator buyer seller zero_funds
+(* create a new deal out of a deal with same voucher dets as before *)
+let changed_deal =
+  fun (deal : Deal) =>
+  fun (state : State) =>
+  fun (initiator : Option Initiator) =>
+  fun (buyer : Option Buyer) =>
+  fun (seller : Option Seller) =>
+  fun (funds : Funds) =>
+    let voucher = get_voucher deal in
+      Deal voucher state initiator buyer seller funds
+
+(* compute the absolute value of fees based on bps value and notional *)
+let abs_from_bps =
+  fun (bps : Uint128) =>
+  fun (abs: Uint128) =>
+  let prod = builtin mul abs bps in (* res = [abs * bps] / 10000 *)
+  builtin div prod tenthousand128
+
+let fee_abs =
+  fun (bps : Uint128) =>
+  fun (n : Notional) =>
+  let nv = notional_val n in
+  abs_from_bps bps nv
+
+(* transactions where contract is to receive funds and deal id *)
+type ReceiveTx =
+  | BID of Uint32
+  | ASK of Uint32
+  | MATCH_BID of Uint32
+  | MATCH_ASK of Uint32
+  | TERMINATE of Uint32
+
+let get_tx_id = fun(tx: ReceiveTx) =>
+  match tx with
+  | BID id => id
+  | ASK id => id
+  | MATCH_BID id => id
+  | MATCH_ASK id => id
+  | TERMINATE id => id
+  end
+
+(* Wrap single message into singleton list *)
+let one_msg =
+  fun (msg : Message) =>
+    let nil_msg = Nil {Message} in
+    Cons {Message} msg nil_msg
+
+(* Wrap 2 messages into a message list *)
+let two_msg =
+  fun (msg1 : Message) =>
+  fun (msg2 : Message) =>
+    let list = one_msg msg2 in
+    Cons {Message} msg1 list
+
+(***************************************************)
+(*               The Smart Contract                *)
+(***************************************************)
+contract CerchiaMnP
+(cerchia_at_deployment: ByStr20,  (* immutable *)
+ index_source_at_deployment: ByStr20,
+ xsgd_addr_at_deployment: ByStr20,
+ fee_cerchia_bps_at_deployment: Uint128)
+with (* check that fee in bps is < 10000 or it could exceed notional *)
+  builtin lt fee_cerchia_bps_at_deployment tenthousand128
+=>
+
+(* mutable fields declarations *)
+field nextDealID: Uint32 = zero32 (* ID of next deal to be created (simple counter) *)
+field dealIDs: List Uint32 = Nil {Uint32} (* store all deal IDs s.t. eod hk can run through all deals *)
+field deals : Map Uint32 Deal = Emp Uint32 Deal (* ID -> Deal with Deal = (State, ...) *)
+field fee_cerchia_bps : Uint128 = fee_cerchia_bps_at_deployment (* fee in bps (0.0001) of notional paid to cerchia once a Deal is matched *)
+field cerchia : ByStr20 = cerchia_at_deployment (* the current address of cerchia. Can be updated by cerchia *)
+field index_source : ByStr20 = index_source_at_deployment (* where to get levels from: to be replaced by oracles *)
+field index_call_date: String = as_str default_date
+field index_levels: Map String Uint32 = Emp String Uint32
+field eod_date: Date = default_date
+field eod_level: Uint32 = zero32 (* the level for the current eod_date, set to 0 AFTER a eod_run *)
+field xsgd_addr: ByStr20 = xsgd_addr_at_deployment
+field this_xsgd_balance: Uint128 = zero128
+field ongoing_deposit : Map ByStr20 ReceiveTx = Emp ByStr20 ReceiveTx (* after a call to deposit tokens need to wait until callback is done *)
+
+
+(* errors that may happen in more than one place *)
+procedure ThrowBadID() (* throw that the ID is not a valid one *)
+  err = {_exception: "Bad deal ID: no deal with this ID found"}; throw err
+end
+procedure ThrowWrongState() (* throw that the current state of the contract is not the right one *)
+  err = {_exception: "Wrong state: deal is not in the right state to perform this action"}; throw err
+end
+procedure ThrowNoValueInOption() (* throw if an optional entry has no value but it is requested *)
+  err = {_exception: "None in Option: no value in option"}; throw err
+end
+procedure ThrowWrongAmountSent() (* throw that amount received does not match P (bid) or N-P (ask) *)
+  err = {_exception: "Wrong amount: need to send correct amount"}; throw err
+end
+procedure ThrowOnlyNotInitiator() (* throw that an action can only be performed by a player different from the initiator of a Deal *)
+  err = {_exception: "Wrong caller: sender must not be initiator of a bid/ask to match it"}; throw err
+end
+procedure ThrowIfContractHasNotEnoughFunds(funds: Uint128, amount: Uint128) (* throw if the contract has not enough funds to spend amount *)
+  is_enough = uint128_ge funds amount;
+  match is_enough with
+  | False =>
+    err = {_exception: "Contract has not enough funds (native or tokens) to send amount"; available: funds; to_spend: amount};
+    throw err
+  | True =>
+  end (* is_enough *)
+end
+procedure check_funds_sufficient(denom: Denom, amount: Uint128)
+  match denom with
+  | ZIL =>
+    b <- _balance;
+    ThrowIfContractHasNotEnoughFunds b amount
+  | XSGD =>
+    b <- this_xsgd_balance;
+    ThrowIfContractHasNotEnoughFunds b amount
+  end (* denom *)
+end
+
+(* check if sender is cerchia and throw if not *)
+procedure throw_if_not_cerchia(sender: ByStr20)
+  c <- cerchia;
+  is_cerchia = builtin eq _sender c;
+  match is_cerchia with
+  | False =>
+    err = {_exception: "Bad caller: action can only be performed by the owner (cerchia)"}; throw err
+  | True => (* check is ok and nothing to do here: proceed *)
+  end
+end
+
+(* check if sender is oracle and and throw if not *)
+procedure throw_if_not_oracle(sender: ByStr20)
+  o <- index_source;
+  is_oracle = builtin eq _sender o;
+  match is_oracle with
+  | False =>
+    err = {_exception: "Bad caller: Only Index Source (Oracle) can call"}; throw err
+  | True => (* check is ok and nothing to do here: proceed *)
+  end
+end
+(* check a date string yyyy-mm-dd and throw if length is not 10*)
+procedure throw_if_wrong_ds_length(ds: String)
+  l = builtin strlen ds;
+  ten = Uint32 10;
+  is_ok = uint32_eq l ten;
+  match is_ok with
+  | False =>
+    err = {_exception: "date string INVALID must have length 10"}; throw err
+  | True => (* length is ok, nothing to do here: proceed *)
+  end
+end
+
+procedure newDeal(denom: Denom, notional : Uint128, premium : Uint128, strike: Uint32, expiry: String, start: String, maturity: String)
+
+  (* check the inputs *)
+  throw_if_wrong_ds_length expiry; (* dates must be valid date strings *)
+  throw_if_wrong_ds_length start;
+  throw_if_wrong_ds_length maturity;
+  remainder = builtin rem notional tenthousand128;   (* notional needs to be a multiple of 10000, and P < N *)
+  n_ok = builtin eq remainder zero128;
+  p_ok = builtin lt premium notional;
+  n_and_p_ok = andb n_ok p_ok;
+
+  match n_and_p_ok with
+
+  | False => err = {_exception: "createNew(): notional must be multiple of 10000 and premium < notional"}; throw err
+  | True =>
+    teopt = str2Date expiry;
+    t0opt = str2Date start;
+    tmopt = str2Date maturity;
+
+    match teopt with (* all dates need to be convertible to a Date type *)
+    | None => err = {_exception: "createNew(): expiry Te invalid"}; throw err
+    | Some te =>
+      match t0opt with
+      | None => err = {_exception: "createNew(): start T0 invalid"}; throw err
+      | Some t0 =>
+        match tmopt with
+        | None => err = {_exception: "createNew(): maturity Tm invalid"}; throw err
+        | Some tm =>
+          dates_ok0 = date_gt t0 te; (* dates need to satisfy: Te < T0 < Tm *)
+          dates_ok1 = date_gt tm t0;
+          dates_ok = andb dates_ok0 dates_ok1;
+          match dates_ok with
+          | False => err = {_exception: "dates do not sasitfy Te < T0 < Tm"}; throw err
+          | True => (* all good, update counter and create the deal *)
+            thisID <- nextDealID;
+            (* add it to the list of IDs, then increase counter for next id *)
+            l0 <- dealIDs; (* add thisID to list of all IDs before increasing the counter *)
+            l1 = Cons {Uint32} thisID l0; (* [thisID, l0], i.e. newest ID first - for efficiency reasons *)
+            dealIDs := l1;
+            one32 = Uint32 1;
+            nextID = builtin add thisID one32;
+            nextDealID := nextID;
+            n = Notional notional;
+            p = Premium premium;
+            k = Strike strike;
+            voucher = Voucher denom n p k te t0 tm;
+            deal = empty_deal voucher;
+            deals[thisID] := deal;
+            e = {_eventname : "createNew():created"; dealId: thisID};
+            event e
+          end (* dates_ok *)
+        end (* tmopt *)
+      end (* t0opt *)
+    end (* teopt *)
+  end (* n_and_p_ok *)
+end
+
+(* @notice: Allows a `_sender` to create a new contract and register it *)
+(* @param:  notional  the deal size in QA                               *)
+(* @param:  premium   what is needed to bid in QA                       *)
+(* @param:  strike    the strike K: triggers if level >= K              *)
+(* @param:  expiry    Te as date string "yyyy-mm-dd"                    *)
+(* @param:  start     T0 as date string "yyyy-mm-dd"                    *)
+(* @param:  maturity  Tm as date string "yyyy-mm-dd"                    *)
+transition createNew(notional : Uint128, premium : Uint128, strike: Uint32, expiry: String, start: String, maturity: String)
+  denom = ZIL;
+  newDeal denom notional premium strike expiry start maturity
+end
+
+(* @notice: same as createNew but with denom = XSGD *)
+transition createNewXSGD(notional : Uint128, premium : Uint128, strike: Uint32, expiry: String, start: String, maturity: String)
+  denom = XSGD;
+  newDeal denom notional premium strike expiry start maturity
+end
+
+(* transfer funds out of ("To") and into ("From") sc without a tag *)
+procedure oneTransferTo(denom: Denom, to: ByStr20, amount: Uint128)
+  check_funds_sufficient denom amount;
+  match denom with
+  | ZIL =>
+    e = {_eventname: "oneTransferTo"; recipient: to; amt: amount};
+    event e;
+    msg = {_tag : ""; _recipient : to; _amount : amount };
+    msgs = one_msg msg;
+    send msgs
+  | XSGD =>
+    addr <- xsgd_addr;
+    msg = { _tag: "Transfer"; _recipient: addr; _amount: zero128; to: to; amount: amount};
+    msgs = one_msg msg;
+    send msgs
+  end (* Denom *)
+end
+
+procedure twoTransfersTo(denom: Denom, to1 : ByStr20, amount1 : Uint128, to2: ByStr20, amount2: Uint128)
+  amount = builtin add amount1 amount2;
+  check_funds_sufficient denom amount;
+  match denom with
+  | ZIL =>
+    e = {_eventname: "twoTransfersTo"; recipient1: to1; amt1: amount1; recipient2: to2; amt2: amount2 };
+    event e;
+    msg1 = {_tag : ""; _recipient : to1; _amount : amount1 };
+    msg2 = {_tag : ""; _recipient : to2; _amount : amount2 };
+    msg = one_msg msg2;
+    msgs = Cons {Message} msg1 msg; (* a list of the messages *)
+    send msgs
+  | XSGD =>
+(*  NOTE:   running into error of too many sc calls / depth ("MAX_DEPTH_REACHED") if transfering tokens here
+            therefore just increasing the allowance of cerchia to transfer the total of funds out of the contract
+            cerchia to manually refund buyer and seller afterwards
+            Alternatively could have 2 transitions refund_buyer(.) and refund_seller(.) for a deal id              *)
+(*  addr <- xsgd_addr;
+    msg1 = { _tag: "Transfer"; _recipient: addr; _amount: zero128; to: to1; amount: amount1};
+    msg2 = { _tag: "Transfer"; _recipient: addr; _amount: zero128; to: to2; amount: amount2};
+    msg = one_msg msg2;
+    msgs = Cons {Message} msg1 msg;
+    send msgs *)
+    e = {_eventname: "twoTransfersTo: REFUND buyer and seller manually by transfering tokens from MnP to them";
+        buyer: to1; buyer_amt: amount1; seller: to2; seller_amount: amount2 };
+    event e;
+    addr <- xsgd_addr;
+    spender <- cerchia;
+    total = builtin add amount1 amount2;
+    old_balance <- this_xsgd_balance; (* THIS UPDATE should only be done when funds are transfered manually *)
+    new_balance = builtin sub old_balance total;
+    this_xsgd_balance := new_balance;
+    msg = { _tag: "IncreaseAllowance"; _recipient: addr; _amount: zero128; spender: spender; amount: total };
+    msgs = one_msg msg;
+    send msgs
+  end (* Denom *)
+end
+
+(* update deal only if bid/ask/match_bid/match_ask was successful, i.e correct *)
+(*   amount was received                                                         *)
+procedure received_success(tx: ReceiveTx, initiator: ByStr20, amount: Uint128)
+  id = get_tx_id tx;
+  d <- deals[id];
+  match d with (* make sure the contract with ID exists *)
+  | None =>
+    ThrowBadID
+  | Some d => (* update the deal *)
+    voucher = get_voucher d;
+    match voucher with
+    | Voucher denom notional premium strike te t0 tm =>
+      match tx with
+      | BID idd =>
+        sNew = BidLive;
+        init = set_initiator initiator;
+        buyer = set_buyer initiator;
+        seller = None {Seller};
+        funds = Funds amount;
+        dNew = changed_deal d sNew init buyer seller funds;
+        deals[id] := dNew;
+        e = {_eventname : "received_success()"; tx_type: tx; dealID: id; dealFunds: funds};
+        event e
+      | ASK idd =>
+        sNew = AskLive;
+        init = set_initiator initiator;
+        buyer = None {Buyer};
+        seller = set_seller initiator;
+        funds = Funds amount;
+        dNew = changed_deal d sNew init buyer seller funds;
+        deals[id] := dNew;
+        e = {_eventname : "received_success()"; tx_type: tx; dealID: id; dealFunds: funds};
+        event e
+      | MATCH_BID idd =>
+        sNew = Matched;
+        init_o = get_initiator d;
+        buyer_o = get_buyer d;
+        seller_o = set_seller initiator;
+        fee_in_bps <- fee_cerchia_bps; (* fee to cerchia is in bps of notional. Pay it. new Funds = P + (N-P) - Fee = N - Fee *)
+        fee_cerchia = fee_abs fee_in_bps notional;
+        nv = notional_val notional;
+        f = builtin sub nv fee_cerchia; (* subtract fees *)
+        funds = Funds f;
+        dNew = changed_deal d sNew init_o buyer_o seller_o funds;
+        deals[id] := dNew;
+        to <- cerchia;
+        oneTransferTo denom to fee_cerchia;
+        e = {_eventname : "received_success()"; tx_type: tx; dealID: id; dealFunds: funds};
+        event e
+      | MATCH_ASK idd =>
+        sNew = Matched;
+        init_o = get_initiator d;
+        buyer_o = set_buyer initiator;
+        seller_o = get_seller d;
+        fee_in_bps <- fee_cerchia_bps; (* fee to cerchia is in bps of notional. Pay it. new Funds = P + (N-P) - Fee = N - Fee *)
+        fee_cerchia = fee_abs fee_in_bps notional;
+        nv = notional_val notional;
+        f = builtin sub nv fee_cerchia; (* subtract fees *)
+        funds = Funds f;
+        dNew = changed_deal d sNew init_o buyer_o seller_o funds;
+        deals[id] := dNew;
+        to <- cerchia;
+        oneTransferTo denom to fee_cerchia;
+        e = {_eventname : "received_success()"; tx_type: tx; dealID: id; dealFunds: funds};
+        event e
+      | TERMINATE idd =>
+        sNew = Terminated;
+        (* refund both buyer and seller *)
+        init_o = get_initiator d;
+        buyer_o = set_buyer initiator;
+        match buyer_o with
+        | None =>
+          ThrowNoValueInOption
+        | Some buyer =>
+          seller_o = get_seller d;
+          match seller_o with
+          | None =>
+            ThrowNoValueInOption
+          | Some seller =>
+            (* NOTE: strictly speaking for tokens I cannot transfer both because of too many calls here
+                     so funds = 0 only after manual refund *)
+            dNew = changed_deal d sNew init_o buyer_o seller_o zero_funds;
+            deals[id] := dNew;
+            buyer_amt = premium_val premium;
+            buyer_addr = buyer_val buyer;
+            seller_addr = seller_val seller;
+            seller_amt = notional_minus_premium_val voucher;
+            twoTransfersTo denom buyer_addr buyer_amt seller_addr seller_amt
+          end (* seller_o *)
+        end (* buyer_o *)
+      end (* tx *)
+    end (* voucher *)
+  end (* match d *)
+end
+
+procedure oneTransferFrom(tx: ReceiveTx, denom: Denom, from: ByStr20, amount: Uint128, target_amount: Uint128)
+  match denom with
+  | ZIL =>
+    amount_ok = builtin eq amount target_amount; (* only accept if amount sent is equal to target amount *)
+    match amount_ok with
+    | False =>
+      ThrowWrongAmountSent
+    | True =>
+      accept;
+      received_success tx from amount;
+      e = {_eventname: "oneTransferFrom"; sender: from; amt: amount};
+      event e
+    end (* amount_ok *)
+  | XSGD =>
+    amount_non_zero = uint128_gt target_amount zero128;
+    match amount_non_zero with
+    | False =>
+      err = {_exception: "oneTransferFrom(.): amount to transfer into contract is zero"}; throw err
+    | True =>
+      has_ongoing_tx <- ongoing_deposit[_sender];
+      match has_ongoing_tx with
+      | None => (* can transact *)
+        ongoing_deposit[_sender] := tx;
+        addr <- xsgd_addr;
+        msg = { _tag: "TransferFrom"; _recipient: addr; _amount: zero128; from: _sender; to: _this_address; amount: target_amount};
+        msgs = one_msg msg;
+        send msgs
+      | Some t => err = {_exception: "oneTransferFrom(): ongoing tx, wait"; tx_type: t}; throw err
+      end (* has_ongoing_tx *)
+    end (* amount_non_zero *)
+  end (* denom *)
+end
+
+(* @notice: Allows a `_sender` to put a bid live for a previously created contract, needs to send P, changes state to BidLive *)
+(* @dev:  *)
+(* @param:  id : the contractID  *)
+transition bid(id : Uint32)
+
+  d <- deals[id];
+
+  match d with (* make sure the contract with ID exists *)
+  | None =>
+    ThrowBadID
+  | Some d =>
+    s = get_state d;
+    match s with (* needs to be in state Empty to put a bid live *)
+    | Empty =>
+      voucher = get_voucher d;
+      match voucher with
+      | Voucher denom notional premium strike te t0 tm =>
+        v = premium_val premium;
+        tx = BID id;
+        oneTransferFrom tx denom _sender _amount v (* check and store amount received, update deal *)
+      end (* voucher *)
+    |_ =>
+      ThrowWrongState
+    end
+  end
+
+end
+
+(* @notice: `_sender` puts an ask live for a previously created contract *)
+(*          needs to send N-P, changes state to AskLive                  *)
+(* @param:  id : the contractID                                          *)
+transition ask(id : Uint32)
+
+  d <- deals[id];
+
+  match d with (* make sure the contract with ID exists *)
+  | None =>
+    ThrowBadID
+  | Some d =>
+    s = get_state d;
+    match s with (* needs to be in state Empty to put an ask live *)
+    | Empty =>
+      voucher = get_voucher d;
+      v = notional_minus_premium_val voucher;
+      denom = getV_denom voucher;
+      tx = ASK id;
+      oneTransferFrom tx denom _sender _amount v (* check and store amount received, update deal *)
+    |_ =>
+      ThrowWrongState
+    end
+  end
+
+end
+
+(* @notice: Initiator can cancel her bid or ask if not yet matched *)
+(*          receives back funds, changes state to Empty            *)
+(* @param:  id : the contractID                                    *)
+transition cancel(id : Uint32)
+
+  d <- deals[id];
+
+  match d with (* make sure the contract with ID exists *)
+  | None =>
+    ThrowBadID
+  | Some d =>
+    s = get_state d;
+    ok = can_be_cancelled s; (* needs to be in state BidLive or AskLive to put an ask live *)
+    match ok with
+    | True =>
+      init_o = get_initiator d;
+      match init_o with
+      | None =>
+        ThrowNoValueInOption
+      | Some init =>
+        to = initiator_val init;
+        ok2 = builtin eq to _sender;
+        match ok2 with (* only initiator can cancel the deal *)
+        | False =>
+          err = {_exception: "Only initiator: sender has not put bid/ask live and cannot cancel it"};
+          throw err
+        | True =>
+          denom = get_denom d;
+          f = get_funds d;
+          amt = funds_val f;
+          (* reset to Empty state *)
+          voucher = get_voucher d;
+          deal = empty_deal voucher;
+          deals[id] := deal;
+          oneTransferTo denom to amt (* refund initiator *)
+        end
+      end
+    | False =>
+      ThrowWrongState
+    end
+  end
+end
+
+
+(* @notice: `_sender` matches a live bid (becomes seller), needs to send N-P, changes state to Matched *)
+(* @dev:  *)
+(* @param:  id : the contractID  *)
+transition match_bid(id : Uint32)
+
+  d <- deals[id];
+
+  match d with (* make sure the contract with ID exists *)
+  | None =>
+    ThrowBadID
+  | Some d =>
+    s = get_state d;
+    match s with (* needs to be in state BidLive to match it *)
+    | BidLive =>
+      init_o = get_initiator d;
+      match init_o with
+      | None =>
+        ThrowNoValueInOption
+      | Some initiator =>
+        initiator_v = initiator_val initiator;
+        is_initiator = builtin eq initiator_v _sender; (* _sender must NOT be the initiator - can't match your own Deal *)
+        match is_initiator with
+        | True =>
+          ThrowOnlyNotInitiator
+        | False =>
+          buyer_o = get_buyer d;
+          match buyer_o with
+          | None =>
+            ThrowNoValueInOption
+          | Some buyer =>
+            voucher = get_voucher d;
+            match voucher with
+            | Voucher denom notional premium strike te t0 tm =>
+              v = notional_minus_premium_val voucher;
+              tx = MATCH_BID id;
+              oneTransferFrom tx denom _sender _amount v (* check and store amount received, update deal *)
+            end (* voucher *)
+          end (* buyer_o *)
+        end (* is_initiator *)
+      end (* init_o *)
+    |_ =>
+      ThrowWrongState
+    end (* s *)
+  end (* d *)
+
+end
+
+
+(* @notice: `_sender` matches a live ask (becomes buyer), needs to send P, changes state to Matched *)
+(* @dev:  *)
+(* @param:  id : the contractID  *)
+transition match_ask(id : Uint32)
+
+  d <- deals[id];
+
+  match d with (* make sure the contract with ID exists *)
+  | None =>
+    ThrowBadID
+  | Some d =>
+    s = get_state d;
+    match s with (* needs to be in state AskLive to match it *)
+    | AskLive =>
+      init_o = get_initiator d;
+      match init_o with
+      | None =>
+        ThrowNoValueInOption
+      | Some initiator =>
+        initiator_v = initiator_val initiator;
+        is_initiator = builtin eq initiator_v _sender; (* _sender must NOT be the initiator - can't match your own Deal *)
+        match is_initiator with
+        | True =>
+          ThrowOnlyNotInitiator
+        | False =>
+          seller_o = get_seller d;
+          match seller_o with
+          | None =>
+            ThrowNoValueInOption
+          | Some seller =>
+            voucher = get_voucher d;
+            match voucher with
+            | Voucher denom notional premium strike te t0 tm =>
+              p = premium_val premium;
+              tx = MATCH_ASK id;
+              oneTransferFrom tx denom _sender _amount p (* check and store amount received, update deal *)
+            end (* voucher *)
+          end (* seller_o *)
+        end (* is_initiator *)
+      end (* init_o *)
+    |_ =>
+      ThrowWrongState
+    end (* s *)
+  end (* d *)
+end
+
+(* @notice: Allows cerchia to (early) terminate a matched deal.*)
+(*          Cerchia needs to send fees back to sc              *)
+(*          and both buyer and seller are refunded in full     *)
+(* @dev:                                                       *)
+(* @param:  id : the contractID                                *)
+transition terminate(id : Uint32)
+  throw_if_not_cerchia _sender;
+  d <- deals[id];
+  match d with (* make sure the contract with ID exists *)
+  | None =>
+    ThrowBadID
+  | Some d =>
+    s = get_state d;
+    ok = can_be_terminated s; (* needs to be in state Matched or Live to terminate it *)
+    match ok with
+    | True =>
+      buyer_o = get_buyer d;
+      match buyer_o with
+      | None =>
+        ThrowNoValueInOption
+      | Some buyer =>
+        seller_o = get_seller d;
+        match seller_o with
+        | None =>
+          ThrowNoValueInOption
+        | Some seller =>
+          voucher = get_voucher d;
+          match voucher with
+          | Voucher denom notional premium strike te t0 tm =>
+            fee_in_bps <- fee_cerchia_bps;
+            fee = fee_abs fee_in_bps notional;
+            tx = TERMINATE id;
+            oneTransferFrom tx denom _sender _amount fee (* check and store amount received, update deal *)
+          end (* voucher *)
+        end (* seller_o *)
+      end (* buyer_o *)
+    | False =>
+      ThrowWrongState
+    end (* s *)
+  end (* d *)
+end
+
+(*********************** end of day process related transitions and procedures *********************)
+(*-------------------------------------------------------------------------------------------------*)
+
+procedure eod_for_deal_id(id: Uint32)
+  deal_o <- deals[id];  (* fetch the contract from the map and make sure it exists *)
+  match deal_o with
+  | None =>
+    ThrowBadID
+  | Some deal =>
+    today <- eod_date;
+    match deal with
+    | Deal voucher state initiator_o buyer_o seller_o funds =>
+      amt = funds_val funds; (* how much the deal has to spend *)
+      voucher = get_voucher deal;
+      match voucher with
+      | Voucher denom notional premium strike te t0 tm =>
+        match state with
+        | Empty   => (* if today >= Te: set to expired *)
+          is_expired = date_ge today te;
+          match is_expired with
+          | True => (* set to expired *)
+            new_state = Expired;
+            new_deal = Deal voucher new_state initiator_o buyer_o seller_o funds;
+            deals[id] := new_deal
+          | False => (* nothing to do *)
+          end (* match is_expired *)
+        | BidLive => (* if today >= Te: set to expired, refund the buyer, set funds to 0 *)
+          is_expired = date_ge today te;
+          match is_expired with
+          | True => (* set to expired, refund buyer *)
+            new_state = Expired;
+            match buyer_o with
+            | None =>
+              ThrowNoValueInOption
+            | Some buyer =>
+              new_deal = Deal voucher new_state initiator_o buyer_o seller_o zero_funds;
+              deals[id] := new_deal;
+              to = buyer_val buyer;
+              oneTransferTo denom to amt
+            end (* match buyer_o *)
+          | False => (* nothing to do *)
+          end (* match is_expired *)
+        | AskLive => (*  if today >= Te: set to expired, refund the seller, set funds to 0  *)
+          is_expired = date_ge today te;
+          match is_expired with
+          | True => (* set to expired, refund seller *)
+            new_state = Expired;
+            match seller_o with
+            | None =>
+              ThrowNoValueInOption
+            | Some seller =>
+              new_deal = Deal voucher new_state initiator_o buyer_o seller_o zero_funds;
+              deals[id] := new_deal;
+              to = seller_val seller;
+              oneTransferTo denom to amt
+            end (* match seller_o *)
+          | False => (* nothing to do *)
+          end (* is_expired *)
+        | Matched => (* if today >= T0: set to live *)
+          goes_live = date_ge today t0;
+          match goes_live with
+          | True => (* set to live *)
+            new_state = Live;
+            new_deal = Deal voucher new_state initiator_o buyer_o seller_o funds;
+            deals[id] := new_deal
+          | False => (* nothing to do *)
+          end (* goes_live *)
+        | Live => (* if t >= Tm: set to matured and send funds to seller. t < Tm: compare today's level to strike. if triggered send funds to buyer *)
+          is_matured = date_ge today tm;
+          match is_matured with (* reached Tm without trigger event, send funds to seller and state = Matured *)
+          | True =>
+            new_state = Matured;
+            match seller_o with
+            | None =>
+              ThrowNoValueInOption
+            | Some seller =>
+              new_deal = Deal voucher new_state initiator_o buyer_o seller_o zero_funds;
+              deals[id] := new_deal;
+              to = seller_val seller;
+              oneTransferTo denom to amt
+            end (* match seller_o *)
+          | False => (* get level, compare to strike. If triggered, send funds to buyer and state = Triggered *)
+            ds = as_str today;
+            l <- eod_level;
+            level_is_positive = uint32_gt l zero32;
+            match level_is_positive with
+            | False =>
+              err = {_exception: "eod_for_deal_id: eod_level is 0"};
+              throw err
+            | True =>
+              k = strike_val strike;
+              is_triggered = uint32_ge l k;
+              match is_triggered with
+              | False => (* nothing to do *)
+              | True => (* send funds to buyer and state = Triggered *)
+                new_state = Triggered;
+                match buyer_o with
+                | None =>
+                  ThrowNoValueInOption
+                | Some buyer =>
+                  new_deal = Deal voucher new_state initiator_o buyer_o seller_o zero_funds;
+                  deals[id] := new_deal;
+                  to = buyer_val buyer;
+                  oneTransferTo denom to amt
+                end (* match buyer_o *)
+              end (* match is_triggered *)
+            end (* match level_o *)
+          end (* match is_matured *)
+        | Expired => (* nothing to do - wild card? *)
+        | Triggered => (* nothing to do - wild card? *)
+        | Matured => (* nothing to do - wild card? *)
+        | Terminated => (* nothing to do  - wild card? *)
+        end (* match state *)
+      end (* match voucher *)
+    end (* match deal *)
+  end (* match deal_o *)
+end
+
+(* @notice: The owner cerchia can prepare the EoD housekeeping process for a given date  *)
+(*          it will call the index_source to get the level if not yet available here     *)
+(* @param:  ds : current date/time as date string of the form yyyy-mm-dd                 *)
+transition prepare_eod(ds : String)
+  throw_if_wrong_ds_length ds;
+  level_o <- index_levels[ds];
+  match level_o with
+  |Some l => (* we have the level for the date ds and nothing to do *)
+    ev = {_eventname: "prepare_eod: index level already available"; date: ds; level: l};
+    event ev
+  |None => (* we do not have the level yet and need to get it from the index source *)
+    index_call_date := ds;
+    to <- index_source;
+    msg = {_tag: "get_level"; _recipient: to; _amount: zero128 ; ds: ds};
+    msgs = one_msg msg;
+    send msgs
+  end (* have_level_for_tay *)
+end
+
+
+(* @notice: The owner cerchia can run the EoD housekeeping process for a single deal *)
+(*          may fail if there is no index_level for today (index_date)               *)
+(* @param:  ds : current date/time as date string of the form "yyyy-mm-dd"           *)
+(* @param:  id : id of the deal to run the EoD process                               *)
+transition run_eod_for_deal(ds : String, id: Uint32)
+  throw_if_not_cerchia _sender;
+  level_o <- index_levels[ds];
+  match level_o with
+  | None => err = {_exception: "run_eod_for_deal: no level of index source available for this date"}; throw err
+  | Some l =>
+    eod_level := l;
+    date_o = str2Date ds;
+    match date_o with
+    | None => err = {_exception: "run_eod_for_deal: ds cannot be converted to a Date type - is it of the form yyyy-mm-dd?"}; throw err
+    | Some date => (* run the eod hk process on this date for each deal with an id in the id_list *)
+      eod_date := date;
+      eod_for_deal_id id;
+      eod_level := zero32
+    end (* date_o *)
+  end (* level_o *)
+end
+
+(********************************* cerchia can set certain fields **********************************)
+(*-------------------------------------------------------------------------------------------------*)
+
+(* @notice: The owner cerchia can update the fee paid when a deal is matched (same fee for all deals) *)
+(* @param:  fee : fee in bps (of notional of the deal): must be < 10000 as is in bps                  *)
+transition set_fee_in_bps(fee : Uint128)
+  throw_if_not_cerchia _sender;
+  is_ok = builtin lt fee tenthousand128;
+  match is_ok with
+  | False =>
+    err = {_exception: "set_fee_in_bps(): fee must be < 10000"}; throw err
+  | True =>
+    fee_cerchia_bps := fee;
+    e = {_eventname : "set_fee_in_bps(.) - updated"; new_fee: fee};
+    event e
+  end (* is_ok *)
+end
+
+(* @notice: The owner cerchia can update its own address *)
+(* @param:  address : cerchia's new address *)
+transition set_cerchia(address : ByStr20)
+  throw_if_not_cerchia _sender;
+  cerchia := address;
+  e = {_eventname : "set_cerchia(.) - updated"; new_address: address};
+  event e
+end
+
+(**************************** oracle related transitions and callbacks  ****************************)
+(*-------------------------------------------------------------------------------------------------*)
+(* @notice: The owner cerchia can update the source for trigger index *)
+(* @param:  address : index source's new address *)
+transition set_index_source(address : ByStr20)
+  throw_if_not_cerchia _sender;
+  index_source := address;
+  e = {_eventname : "set_index_source(.) - updated"; new_address: address};
+  event e
+end
+
+(* @notice: The owner cerchia can delete a level for a specific date *)
+(*          (for example, if it was seen wrong)                      *)
+(* @param:  ds : date string of the form "yyyy-mm-dd"                *)
+transition delete_level(ds: String)
+  throw_if_not_cerchia _sender;
+  ex <- exists index_levels[ds];
+  match ex with
+  |True =>
+    delete index_levels[ds];
+    ev = {_eventname : "delete_level"; date: ds};
+    event ev
+  |False =>
+    ev = {_eventname : "delete_level: does not exist"; date: ds};
+    event ev
+  end (* match ex *)
+end
+
+(* @notice: callback function that oracle/index_source calls with the level when asked for it *)
+transition callback_level(level: Option Uint32)
+  throw_if_not_oracle _sender;
+  match level with
+  |Some l =>
+    date_called <- index_call_date;
+    index_levels[date_called] := l; (* store it *)
+    ev = {_eventname : "callback_level: successful"; level: l};
+    event ev
+  |None =>
+    no_date = as_str default_date;
+    index_call_date := no_date; (* as call for this date was unsuccessful *)
+    err = {_exception: "callback_level: FAILED no entry available"};
+    throw err
+  end (* match level *)
+end
+
+
+(************************ Token transfer related transitions and callbacks  ************************)
+(*-------------------------------------------------------------------------------------------------*)
+(* @notice: The owner cerchia can update the address of the xsgd token proxy *)
+(* @param:  address : xsgd proxy's new address *)
+transition set_xsgd_addr(address : ByStr20)
+  throw_if_not_cerchia _sender;
+  xsgd_addr := address;
+  e = {_eventname : "set_xsgd_addr(.) - updated"; new_address: address};
+  event e
+end
+
+(************************ callbacks after token transfer to this contract (deposit) ************************)
+(*
+  msg_to_sender = {_tag : "TransferFromSuccessCallBack"; _recipient : initiator; _amount : zero;
+          initiator : initiator; sender : from; recipient : to; amount : amount };
+*)
+transition TransferFromSuccessCallBack(initiator: ByStr20, sender: ByStr20, recipient: ByStr20, amount: Uint128)
+  (* deposit into sc is done: unpause and update our balance and the deal by calling received_success *)
+  tx_o <- ongoing_deposit[sender];
+  match tx_o with
+  |None =>
+    err = {_exception: "TransferFromSuccessCallBack: no ongoing tx for sender"; sender: sender};
+    throw err
+  |Some tx =>
+    delete ongoing_deposit[sender];
+    old_balance <- this_xsgd_balance;
+    new_balance = builtin add old_balance amount;
+    this_xsgd_balance := new_balance;
+    ev = {
+      _eventname: "TransferFromSuccessCallBack";
+      initiator: initiator;
+      sender: sender;
+      recipient: recipient;
+      amount: amount;
+      new_xsgd_bal: new_balance
+    };
+    event ev;
+    received_success tx sender amount
+  end (* tx_o *)
+end
+
+(*  msg_to_recipient = {_tag : "RecipientAcceptTransferFrom"; _recipient : to; _amount : zero;
+          initiator : initiator; sender : from; recipient : to; amount : amount};               *)
+transition RecipientAcceptTransferFrom(initiator: ByStr20, sender: ByStr20, recipient: ByStr20, amount: Uint128)
+  ev = {
+    _eventname: "RecipientAcceptTransferFrom";
+    initiator: initiator;
+    sender: sender;
+    recipient: recipient;
+    amount: amount
+  };
+  event ev
+end
+
+(********************* callbacks after token transfer from this contract (withdrawal)  *************************)
+(*  msg_to_sender = {_tag : "TransferSuccessCallBack"; _recipient : initiator;
+                    _amount : zero; sender : initiator; recipient : to; amount : amount};
+   recipient is the one who gets the funds                                                *)
+transition TransferSuccessCallBack(sender: ByStr20, recipient: ByStr20, amount: Uint128)
+  (* withdrawal is done: update the contracts (internal bookkeeping) balance of tokens *)
+  old_balance <- this_xsgd_balance;
+  new_balance = builtin sub old_balance amount;
+  this_xsgd_balance := new_balance;
+  ev = {
+    _eventname: "TransferSuccessCallBack";
+    sender: sender;
+    recipient: recipient;
+    amount: amount;
+    new_xsgd_bal: new_balance
+  };
+  event ev
+end
+
+(*  msg_to_recipient = {_tag : "RecipientAcceptTransfer"; _recipient : to;
+          _amount : zero; sender : initiator; recipient : to; amount : amount};       *)
+transition RecipientAcceptTransfer(sender: ByStr20, recipient: ByStr20, amount: Uint128)
+  ev = {
+    _eventname: "RecipientAcceptTransfer";
+    sender: sender;
+    recipient: recipient;
+    amount: amount
+  };
+  event ev
+end

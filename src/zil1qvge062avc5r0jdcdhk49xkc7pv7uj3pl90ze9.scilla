@@ -1,0 +1,35 @@
+scilla_version 0
+
+(* HelloWorld contract *)
+
+import ListUtils
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+library HelloWorld
+
+let one_msg = 
+  fun (msg : Message) => 
+  let nil_msg = Nil {Message} in
+  Cons {Message} msg nil_msg
+  
+let not_owner_code = Int32 1
+let set_hello_code = Int32 2
+
+(***************************************************)
+(*             The contract definition             *)
+(***************************************************)
+
+contract Register
+(owner: ByStr20)
+
+field welcome_msg : String = ""
+
+transition registerMessage (msg : String)
+    welcome_msg := msg;
+    e = {_eventname : "setHello()"; code : set_hello_code};
+        r <- welcome_msg;
+    e = {_eventname: "getHello()"; msg: r};
+    event e
+  end

@@ -1,0 +1,47 @@
+scilla_version 0
+
+contract TestSecond()
+field call_counter: Uint256 = Uint256 0
+
+transition DoWork(counter: Uint256, where: ByStr20)
+  one = Uint256 1;
+  current_counter <- call_counter;
+  current_counter = builtin add current_counter one;
+  call_counter := current_counter;
+  e = {_eventname: "DoWork"; sender: _sender; counter: counter};
+  event e;
+  stop_recursion = builtin lt counter one;
+  match stop_recursion with
+  | True =>
+  | False =>
+    new_counter = builtin sub counter one;
+    nil_msg = Nil {Message};
+    msg = {_tag : "start"; _recipient : where; _amount : Uint128 0; counter : new_counter};
+    msgs = Cons {Message} msg nil_msg;
+    send msgs
+  end
+end
+
+transition DoWork1(counter: Uint256, where: ByStr20)
+  one = Uint256 1;
+  current_counter <- call_counter;
+  current_counter = builtin add current_counter one;
+  call_counter := current_counter;
+  e = {_eventname: "DoWork1"; sender: _sender; counter: counter};
+  event e;
+  stop_recursion = builtin lt counter one;
+  match stop_recursion with
+  | True =>
+  | False =>
+    new_counter = builtin sub counter one;
+    nil_msg = Nil {Message};
+    msg = {_tag : "startDuble"; _recipient : where; _amount : Uint128 0; counter : new_counter};
+    msgs = Cons {Message} msg nil_msg;
+    send msgs
+  end
+end
+
+transition BlaBla(counter: Uint256)
+  e = {_eventname: "BlaBla"; sender: _sender; counter: counter};
+  event e
+end

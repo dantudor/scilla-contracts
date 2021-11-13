@@ -1,0 +1,28 @@
+scilla_version 0
+
+(* HelloWorld contract *)
+
+import ListUtils
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+library HelloWorld
+
+let one_msg = 
+  fun (msg : Message) => 
+  let nil_msg = Nil {Message} in
+  Cons {Message} msg nil_msg
+
+(***************************************************)
+(*             The contract definition             *)
+(***************************************************)
+
+contract HelloWorld
+()
+
+field contract_msg : String = "Zilliqan"
+
+transition getHello ()
+    msg <- contract_msg
+end

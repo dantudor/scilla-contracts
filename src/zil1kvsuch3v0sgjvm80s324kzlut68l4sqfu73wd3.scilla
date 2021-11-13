@@ -1,0 +1,523 @@
+scilla_version 0
+
+import BoolUtils
+
+library SSNList
+
+let one_msg =
+  fun (m : Message) =>
+    let e = Nil {Message} in
+    Cons {Message} m e
+
+let uint128_zero = Uint128 0
+let bool_active = True
+let bool_inactive = False
+let uint128_10_power_7 = Uint128 10000000
+let empty_tag = ""
+let add_funds_tag = "AddFunds"
+let multisig_tag_addfunds = "AddFunds"
+let max_ssn_node_number = Uint32 20
+
+let mk_contract_frozen_error =
+  fun (sender : ByStr20) =>
+    { _exception : "Contract frozen failure"; sender : sender }
+
+let mk_verifier_validation_failed_error =
+  fun (sender : ByStr20) =>
+    { _exception : "Verifier validation failed"; sender : sender }
+
+let mk_admin_validation_failed_error =
+  fun (sender : ByStr20) =>
+    { _exception : "Admin validation failed"; sender : sender }
+
+let mk_proxy_validation_failed_error =
+  fun (sender : ByStr20) =>
+    { _exception : "Proxy validation failed"; sender : sender }
+
+let mk_ssn_not_exists_error =
+  fun (ssn : ByStr20) =>
+    { _exception : "SSN doesn't exist"; ssn_address : ssn }
+
+let mk_ssn_list_full_error =
+  fun (sender : ByStr20) =>
+    { _exception : "SSN list already full"; sender : sender }
+
+let mk_ssn_already_exists_error =
+  fun (ssn : ByStr20) =>
+    { _exception : "SSN already exists"; ssn_address : ssn }
+
+let mk_ssn_added_event =
+  fun (ssn : ByStr20) =>
+    { _eventname : "SSN added"; ssn_address : ssn }
+
+let mk_update_staking_parameter_error =
+  fun (sender : ByStr20) =>
+    fun (min_stake : Uint128) =>
+      fun (max_stake : Uint128) =>
+        fun (contract_max_stake : Uint128) =>
+         { _exception : "Update staking parameter error"; sender : sender; min_stake : min_stake; max_stake : max_stake; contract_max_stake : contract_max_stake }
+
+let mk_update_staking_parameter_event =
+  fun (sender : ByStr20) =>
+    { _eventname : "Update staking parameter event"; sender : sender}
+
+let mk_ssn_not_exists_error =
+  fun (ssn : ByStr20) =>
+    { _exception : "SSN doesn't exist"; ssn_address : ssn }
+
+let mk_ssn_removed_event =
+  fun (ssn : ByStr20) =>
+    { _eventname : "SSN removed"; ssn_address : ssn }
+
+let mk_stake_deposit_event =
+  fun (ssn : ByStr20) =>
+  fun (amount : Uint128) =>
+    { _eventname : "SSN updated stake"; ssn_address : ssn; new_stake_amount : amount }
+
+let mk_stake_buffered_deposit_event =
+  fun (ssn : ByStr20) =>
+  fun (amount : Uint128) =>
+    { _eventname : "SSN updated buffered stake"; ssn_address : ssn; new_stake_amount : amount }
+
+let mk_stake_deposit_below_stake_limit_error =
+  fun (ssn : ByStr20) =>
+  fun (amount : Uint128) =>
+  fun (minstake : Uint128) =>
+    { _exception : "SSN stake deposit below min_stake limit"; ssn_address : ssn; requested_deposit : amount; min_stake : minstake }
+
+let mk_stake_deposit_above_stake_limit_error =
+  fun (ssn : ByStr20) =>
+  fun (amount : Uint128) =>
+  fun (maxstake : Uint128) =>
+    { _exception : "SSN stake deposit above max_stake limit"; ssn_address : ssn; requested_deposit : amount; max_stake : maxstake }
+
+let mk_total_stake_deposit_above_contract_stake_limit_error =
+  fun (ssn : ByStr20) =>
+  fun (amount : Uint128) =>
+  fun (contractmaxstake : Uint128) =>
+    { _exception : "SSN stake deposit will result in contract stake deposit go above limit"; ssn_address : ssn; requested_deposit : amount; contract_max_stake : contractmaxstake }
+
+let mk_assign_stake_reward_event =
+  fun (ssn : ByStr20) =>
+  fun (total_reward : Uint128) =>
+    { _eventname : "SSN assign reward"; ssn_address : ssn; total_reward : total_reward }
+
+let mk_withdraw_stake_rewards_event =
+  fun (ssn : ByStr20) =>
+  fun (total_reward: Uint128) =>
+    { _eventname : "SSN withdraw reward"; ssn_address : ssn; withdraw_total_reward : total_reward }
+
+ let mk_add_funds_event =
+  fun (sender : ByStr20) =>
+    { _eventname : "Verifier add funds"; verifier : sender }
+
+ let mk_withdraw_below_stake_limit_error =
+    fun (ssn : ByStr20) =>
+    fun (minstake: Uint128) =>
+      { _exception : "SSN withdrawal below min_stake limit"; ssn_address : ssn; minstake_limit : minstake }
+
+ let mk_withdraw_above_stake_error =
+    fun (ssn : ByStr20) =>
+      { _exception : "SSN withdrawal above stake"; ssn_address : ssn }
+
+ let mk_withdraw_stake_buffered_deposit_exist_error =
+    fun (ssn : ByStr20) =>
+    fun (buffdeposit: Uint128) =>
+      { _exception : "SSN withdrawal not allowed when some deposit is bufferred"; ssn_address : ssn; buffered_stake_amount : buffdeposit }
+
+type Ssn =
+| Ssn of Bool Uint128 Uint128 String String Uint128
+
+type SsnRewardShare =
+| SsnRewardShare of ByStr20 Uint128
+
+contract SSNList(
+  init_admin : ByStr20,
+  proxy_address : ByStr20
+)
+
+field ssnlist : Map ByStr20 Ssn = Emp ByStr20 Ssn
+field verifier : Option ByStr20 = None {ByStr20}
+field minstake : Uint128 = Uint128 0
+field maxstake : Uint128 = Uint128 0
+field contractmaxstake : Uint128 = Uint128 0
+field totalstakedeposit : Uint128 = Uint128 0
+field contractadmin : ByStr20  = init_admin
+field lastrewardblocknum : Uint128 = Uint128 0
+field paused : Bool = True
+
+procedure validate_verifier (initiator : ByStr20)
+  verifier_l <- verifier;
+  match verifier_l with
+  | Some v =>
+    is_verifier = builtin eq initiator v;
+    match is_verifier with
+    | True =>
+    | False =>
+      e = mk_verifier_validation_failed_error initiator;
+      throw e
+    end
+  | None =>
+    e = mk_verifier_validation_failed_error initiator;
+    throw e
+  end
+end
+
+procedure validate_admin (initiator : ByStr20)
+  contractadmin_l <- contractadmin;
+  is_admin = builtin eq initiator contractadmin_l;
+  match is_admin with
+  | True =>
+  | False =>
+    e = mk_admin_validation_failed_error initiator;
+    throw e
+  end
+end
+
+procedure validate_proxy ()
+  is_proxy = builtin eq _sender proxy_address;
+  match is_proxy with
+  | True =>
+  | False =>
+    e = mk_proxy_validation_failed_error _sender;
+    throw e
+  end
+end
+
+procedure is_paused ()
+  paused_l <- paused;
+  match paused_l with
+  | False =>
+  | True =>
+    e = mk_contract_frozen_error _sender;
+    throw e
+  end
+end
+
+procedure TransferFunds (tag: String, amount : Uint128, recipient : ByStr20)
+    msg = {_tag : tag; _recipient : recipient; _amount : amount};
+    msgs = one_msg msg;
+    send msgs
+end
+
+procedure update_stake_reward (entry : SsnRewardShare)
+  match entry with
+  | SsnRewardShare ssnaddr reward_percent =>
+    curval <- ssnlist[ssnaddr];
+    match curval with
+    | None =>
+      e = mk_ssn_not_exists_error ssnaddr;
+      throw e
+    | Some (Ssn active_status stake_amount rewards urlraw urlapi buffereddeposit) =>
+      hundred = Uint128 100;
+      new_reward = builtin mul stake_amount reward_percent;
+      new_reward = builtin div new_reward hundred;
+      new_reward = builtin div new_reward uint128_10_power_7;
+      total_reward = builtin add new_reward rewards;
+      new_stake_amount = builtin add stake_amount buffereddeposit;
+      ssn = Ssn active_status new_stake_amount total_reward urlraw urlapi uint128_zero;
+      ssnlist[ssnaddr] := ssn;
+      e = mk_assign_stake_reward_event ssnaddr total_reward;
+      event e
+    end
+  end
+end
+
+transition pause(initiator: ByStr20)
+    validate_proxy;
+    validate_admin initiator;
+    paused := bool_active
+end
+
+transition unpause(initiator: ByStr20)
+    validate_proxy;
+    validate_admin initiator;
+    paused := bool_inactive
+end
+
+transition update_admin (admin : ByStr20, initiator: ByStr20)
+  validate_proxy;
+  validate_admin initiator;
+  contractadmin := admin
+end
+
+transition update_verifier (verif : ByStr20, initiator: ByStr20)
+  validate_proxy;
+  validate_admin initiator;
+  newverifier = Some {ByStr20} verif;
+  verifier := newverifier
+end
+
+transition drain_contract_balance (initiator : ByStr20)
+  validate_proxy;
+  validate_admin initiator;
+  bal <- _balance;
+  TransferFunds multisig_tag_addfunds bal initiator
+end
+
+transition update_staking_parameter (min_stake : Uint128, max_stake : Uint128, contract_max_stake : Uint128, initiator : ByStr20)
+  is_paused;
+  validate_proxy;
+  validate_admin initiator;
+  less_than = builtin lt min_stake max_stake;
+  match less_than with
+  | True =>
+    less_than = builtin lt max_stake contract_max_stake;
+    match less_than with
+    | True =>
+      minstake := min_stake;
+      maxstake := max_stake;
+      contractmaxstake := contract_max_stake;
+      e = mk_update_staking_parameter_event initiator;
+      event e
+    | False =>
+      e = mk_update_staking_parameter_error initiator min_stake max_stake contract_max_stake;
+      throw e
+    end
+  | False =>
+     e = mk_update_staking_parameter_error initiator min_stake max_stake contract_max_stake;
+     throw e
+  end
+
+end
+
+transition add_ssn (ssnaddr : ByStr20, urlraw : String, urlapi : String, initiator : ByStr20)
+  is_paused;
+  validate_proxy;
+  validate_admin initiator;
+  already_exists <- exists ssnlist[ssnaddr];
+  match already_exists with
+  | True =>
+    e = mk_ssn_already_exists_error ssnaddr;
+    throw e
+  | False =>
+    ssns <- ssnlist;
+    current_ssn_number = builtin size ssns;
+    less_than_max = builtin lt current_ssn_number max_ssn_node_number;
+    match less_than_max with
+    | True =>
+      stake_amount = Uint128 0;
+      status = False;
+      buffered_deposit = Uint128 0;
+      rewards = Uint128 0;
+      s = Ssn status stake_amount rewards urlraw urlapi buffered_deposit;
+      ssnlist[ssnaddr] := s;
+      e = mk_ssn_added_event ssnaddr;
+      event e      
+    | False =>
+      e = mk_ssn_list_full_error initiator;
+      throw e
+    end
+  end
+end
+
+transition add_ssn_after_upgrade (ssnaddr : ByStr20, stake_amount : Uint128, rewards : Uint128, urlraw : String, urlapi : String, buffered_deposit : Uint128, initiator : ByStr20)
+  is_paused;
+  validate_proxy;
+  validate_admin initiator;
+  already_exists <- exists ssnlist[ssnaddr];
+  match already_exists with
+  | True =>
+    e = mk_ssn_already_exists_error ssnaddr;
+    throw e
+  | False =>
+    ssns <- ssnlist;
+    current_ssn_number = builtin size ssns;
+    less_than_max = builtin lt current_ssn_number max_ssn_node_number;
+    match less_than_max with
+    | True =>
+      pass = builtin eq stake_amount uint128_zero;
+      (* set status as inactive if stake_amount is 0 *)
+      status = negb pass;
+      match pass with
+      | True =>
+      | False =>
+        (* Update the total stake deposit *)
+        totalstakedeposit_l <- totalstakedeposit;
+        totalstakedeposit_l = builtin add totalstakedeposit_l stake_amount;
+        totalstakedeposit := totalstakedeposit_l
+      end;
+      s = Ssn status stake_amount rewards urlraw urlapi buffered_deposit;
+      ssnlist[ssnaddr] := s
+    | False =>
+      e = mk_ssn_list_full_error initiator;
+      throw e
+    end
+  end
+end
+
+transition remove_ssn (ssnaddr : ByStr20, initiator: ByStr20)
+  is_paused;
+  validate_proxy;
+  validate_admin initiator;
+  ssn_optional <- ssnlist[ssnaddr];
+  match ssn_optional with
+  | Some (Ssn active_status stake_amount rewards urlraw urlapi buffereddeposit) =>
+    funds_temp = builtin add stake_amount rewards;
+    funds = builtin add funds_temp buffereddeposit;
+    TransferFunds add_funds_tag funds ssnaddr;
+    delete ssnlist[ssnaddr];
+    totalstakedeposit_l <- totalstakedeposit;
+    totalstakedeposit_l = builtin sub totalstakedeposit_l stake_amount;
+    totalstakedeposit := totalstakedeposit_l;
+    e = mk_ssn_removed_event ssnaddr;
+    event e
+  | None =>
+    e = mk_ssn_not_exists_error ssnaddr;
+    throw e
+  end
+end
+
+transition stake_deposit (initiator: ByStr20)
+  is_paused;
+  validate_proxy;
+  accept;
+  curval <- ssnlist[initiator];
+  match curval with
+  | None =>
+    e = mk_ssn_not_exists_error initiator;
+    throw e
+  | Some (Ssn active_status stake_amount rewards urlraw urlapi buffereddeposit) =>
+    (* check if first non-zero deposit *)
+    minstake_l <- minstake;
+    maxstake_l <- maxstake;
+    new_buff_amount = builtin add _amount buffereddeposit;
+    new_stake_amount = builtin add new_buff_amount stake_amount;
+    pass = builtin lt new_stake_amount minstake_l;
+    match pass with
+    | True => (* stake deposit below minstake limit *)
+      e = mk_stake_deposit_below_stake_limit_error initiator new_stake_amount minstake_l;
+      throw e
+    | False =>
+      pass = builtin lt maxstake_l new_stake_amount;
+      match pass with
+      | True => (* stake deposit above maxstake limit *)
+        e = mk_stake_deposit_above_stake_limit_error initiator new_stake_amount maxstake_l;
+        throw e
+      | False =>
+        totalstakedeposit_l <- totalstakedeposit;
+        newStakeDeposit = builtin add totalstakedeposit_l _amount;
+        contractmaxstake_l <- contractmaxstake;
+        pass = builtin lt contractmaxstake_l newStakeDeposit;
+        match pass with
+        | True => (* total stake deposit for contract goes above contractmaxstake limit *)
+          e = mk_total_stake_deposit_above_contract_stake_limit_error initiator new_stake_amount contractmaxstake_l;
+          throw e
+        | False =>
+          pass = builtin eq stake_amount uint128_zero;
+          match pass with
+          | True =>
+            ssn = Ssn bool_active _amount rewards urlraw urlapi uint128_zero;
+            ssnlist[initiator] := ssn;
+            e = mk_stake_deposit_event initiator _amount;
+            event e
+          | False =>
+            ssn = Ssn bool_active stake_amount rewards urlraw urlapi new_buff_amount;
+            ssnlist[initiator] := ssn;
+            e = mk_stake_buffered_deposit_event initiator _amount;
+            event e
+          end;
+          totalstakedeposit := newStakeDeposit
+        end
+      end
+    end
+  end
+end
+
+transition assign_stake_reward (ssnreward_list : List SsnRewardShare, reward_blocknum : Uint128, initiator: ByStr20)
+  is_paused;
+  validate_proxy;
+  validate_verifier initiator;
+  forall ssnreward_list update_stake_reward;
+  lastrewardblocknum := reward_blocknum
+end
+
+transition withdraw_stake_rewards (initiator : ByStr20)
+  is_paused;
+  validate_proxy;
+  curval <- ssnlist[initiator];
+  match curval with
+  | None =>
+    e = mk_ssn_not_exists_error initiator;
+    throw e
+  | Some (Ssn active_status stake_amount rewards urlraw urlapi buffereddeposit) =>
+    pass = builtin eq stake_amount uint128_zero;
+    match pass with
+    | True =>
+      delete ssnlist[initiator]
+    | False =>
+      ssn = Ssn active_status stake_amount uint128_zero urlraw urlapi buffereddeposit;
+      ssnlist[initiator] := ssn
+    end;
+    TransferFunds add_funds_tag rewards initiator;
+    e = mk_withdraw_stake_rewards_event initiator rewards;
+    event e
+  end
+end
+
+transition withdraw_stake_amount (amount : Uint128, initiator: ByStr20)
+  is_paused;
+  validate_proxy;
+  curval <- ssnlist[initiator];
+  match curval with
+  | None =>
+    e = mk_ssn_not_exists_error initiator;
+    throw e
+  | Some (Ssn active_status stake_amount rewards urlraw urlapi buffereddeposit) =>
+    pass = builtin eq buffereddeposit uint128_zero;
+    match pass with
+    | False =>
+      e = mk_withdraw_stake_buffered_deposit_exist_error initiator buffereddeposit;
+      throw e
+    | True =>
+      pass = builtin lt amount stake_amount;
+      match pass with
+      | True => (* Partial withdrawal. so check for min balance after withdrawal for min stake limit *)
+          bal_left = builtin sub stake_amount amount;
+          minstake_l <- minstake;
+          pass = builtin lt bal_left minstake_l;
+          match pass with
+          | True =>
+            e = mk_withdraw_below_stake_limit_error initiator minstake_l;
+            throw e
+          | False => (* pass minstake check for withdrawal *)
+            (* Update the stake amount *)
+            ssn = Ssn active_status bal_left rewards urlraw urlapi buffereddeposit;
+            ssnlist[initiator] := ssn;
+            totalstakedeposit_l <- totalstakedeposit;
+            tmp = builtin sub totalstakedeposit_l amount;
+            totalstakedeposit := tmp;
+            TransferFunds add_funds_tag amount initiator
+          end
+      | False => (* requested withdrawal equals balance or greater than balance *)
+          pass = builtin eq amount stake_amount;
+          match pass with
+          | False => (* withdrawal above available balance *)
+            e = mk_withdraw_above_stake_error initiator;
+            throw e
+          | True => (* pass withdrawal checks *)
+            pass = builtin eq rewards uint128_zero;
+            match pass with
+            | True =>
+              delete ssnlist[initiator]
+            | False =>
+              ssn = Ssn bool_inactive uint128_zero rewards urlraw urlapi buffereddeposit;
+              ssnlist[initiator] := ssn
+            end;
+            totalstakedeposit_l <- totalstakedeposit;
+            tmp = builtin sub totalstakedeposit_l amount;
+            totalstakedeposit := tmp;
+            TransferFunds add_funds_tag amount initiator
+          end
+        end
+    end
+  end
+end
+
+transition AddFunds (initiator : ByStr20)
+  is_paused;
+  validate_proxy;
+  accept;
+  e = mk_add_funds_event initiator;
+  event e
+end

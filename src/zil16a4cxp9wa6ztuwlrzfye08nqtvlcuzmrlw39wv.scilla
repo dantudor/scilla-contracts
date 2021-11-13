@@ -1,0 +1,777 @@
+(*       _ _   __  __                    *)
+(*   ___(_) | |  \/  | ___   ___  _ __   *)
+(*  |_  / | | | |\/| |/ _ \ / _ \| '_ \  *)
+(*   / /| | | | |  | | (_) | (_) | | | | *)
+(*  /___|_|_| |_|  |_|\___/ \___/|_| |_| *)
+(*                                       *)
+(*              zilmoon.com              *)
+
+scilla_version 0
+import BoolUtils
+
+library ZilMoon
+
+let one_msg = 
+  fun (msg : Message) => 
+  let nil_msg = Nil {Message} in
+  Cons {Message} msg nil_msg
+
+let zero = Uint128 0
+let divideTotal = Uint128 100
+let potDevFee = Uint128 10
+let potCut = Uint128 90
+
+let accepted_code = Uint32 0
+let not_owner_code = Uint32 1
+let code_invalid_params = Uint32 2
+let not_enough_zil_code = Uint32 3
+let successful_withdraw = Uint32 4
+let no_withdraw_balance = Uint32 5
+let game_started = Uint32 7
+
+let true = True
+  
+contract ZilMoon(owner: ByStr20)
+
+field developerVault: Uint128 = Uint128 0
+
+field playerBalance: Map ByStr20 Uint128
+    = Emp ByStr20 Uint128
+    
+(*------------------------------------*)
+
+(*    Daily prediction variables      *)
+
+(*------------------------------------*)
+
+field dailyPredictionTimer : BNum  = BNum 0
+field dailyPredictionPot: Uint128 = Uint128 0
+
+field dailyPredictPrice: Uint128 = Uint128 10000000000000 (* Default daily prediction cost is 10 ZIL *)
+field dailyPredictMinTimer : Int256  = Int256 1660
+field dailyPredictStartTimer : Uint32  = Uint32 1729
+field dailyPredictRound : Uint128 = Uint128 0
+
+field playerDailyPrediction: Map ByStr20 String
+    = Emp ByStr20 String
+    
+field playerDailyRound: Map ByStr20 Uint128
+    = Emp ByStr20 Uint128
+    
+
+(*------------------------------------*)
+
+(*    Weekly prediction variables     *)
+
+(*------------------------------------*)
+
+field weeklyPredictionTimer : BNum  = BNum 0
+field weeklyPredictionPot: Uint128 = Uint128 0
+
+field weeklyPredictPrice: Uint128 = Uint128 50000000000000 (* Default daily prediction cost is 50 ZIL *)
+field weeklyPredictMinTimer : Int256  = Int256 11620
+field weeklyPredictStartTimer : Uint32  = Uint32 12448
+field weeklyPredictRound : Uint128 = Uint128 0
+
+field playerWeeklyPrediction: Map ByStr20 String
+    = Emp ByStr20 String
+    
+field playerWeeklyRound: Map ByStr20 Uint128
+    = Emp ByStr20 Uint128
+    
+(*------------------------------------*)
+
+(*    Monthly prediction variables     *)
+
+(*------------------------------------*)
+
+field monthlyPredictionTimer : BNum  = BNum 0
+field monthlyPredictionPot: Uint128 = Uint128 0
+
+field monthlyPredictPrice: Uint128 = Uint128 100000000000000 (* Default daily prediction cost is 100 ZIL *)
+field monthlyPredictMinTimer : Int256  = Int256 49800
+field monthlyPredictStartTimer : Uint32  = Uint32 51460
+field monthlyPredictRound : Uint128 = Uint128 0
+
+field playerMonthlyPrediction: Map ByStr20 String
+    = Emp ByStr20 String
+    
+field playerMonthlyRound: Map ByStr20 Uint128
+    = Emp ByStr20 Uint128
+    
+
+(*------------------------------------*)
+
+(*      Setters & owner functions     *)
+
+(*------------------------------------*)
+
+transition setDailyPredictPrice(amount: Uint128)
+  sender_is_owner = builtin eq _sender owner;
+  match sender_is_owner with
+     | False =>
+          msg = {_tag: "";
+                _recipient: _sender;
+                _amount: zero;
+                code: not_owner_code};
+          msgs = one_msg msg;
+          send msgs
+     | True =>
+        dailyPredictPrice := amount;
+        msg = {_tag: "";
+                _recipient: _sender;
+                _amount: zero;
+                code: accepted_code};
+        msgs = one_msg msg;
+        send msgs
+  end
+end
+
+transition setWeeklyPredictPrice(amount: Uint128)
+  sender_is_owner = builtin eq _sender owner;
+  match sender_is_owner with
+     | False =>
+          msg = {_tag: "";
+                _recipient: _sender;
+                _amount: zero;
+                code: not_owner_code};
+          msgs = one_msg msg;
+          send msgs
+     | True =>
+        weeklyPredictPrice := amount;
+        msg = {_tag: "";
+                _recipient: _sender;
+                _amount: zero;
+                code: accepted_code};
+        msgs = one_msg msg;
+        send msgs
+  end
+end
+
+transition setMonthlyPredictPrice(amount: Uint128)
+  sender_is_owner = builtin eq _sender owner;
+  match sender_is_owner with
+     | False =>
+          msg = {_tag: "";
+                _recipient: _sender;
+                _amount: zero;
+                code: not_owner_code};
+          msgs = one_msg msg;
+          send msgs
+     | True =>
+        monthlyPredictPrice := amount;
+        msg = {_tag: "";
+                _recipient: _sender;
+                _amount: zero;
+                code: accepted_code};
+        msgs = one_msg msg;
+        send msgs
+  end
+end
+
+transition setDailyPredictWinner(winner: ByStr20)
+  sender_is_owner = builtin eq _sender owner;
+  match sender_is_owner with
+     | False =>
+          msg = {_tag: "";
+                _recipient: _sender;
+                _amount: zero;
+                code: not_owner_code};
+          msgs = one_msg msg;
+          send msgs
+     | True =>
+       balanceList <- playerBalance;
+       balance = builtin get balanceList winner;
+       match balance with
+         | None =>
+           earnings <- dailyPredictionPot;
+           playerBalance[winner] := earnings;
+           dailyPredictionPot := zero
+         | Some balance =>
+          earnings <- dailyPredictionPot;
+          newBalance = builtin add balance earnings;
+          playerBalance[winner] := newBalance;
+          
+          dailyPredictionPot := zero
+        end
+  end
+end
+
+transition setWeeklyPredictWinner(winner: ByStr20)
+  sender_is_owner = builtin eq _sender owner;
+  match sender_is_owner with
+     | False =>
+          msg = {_tag: "";
+                _recipient: _sender;
+                _amount: zero;
+                code: not_owner_code};
+          msgs = one_msg msg;
+          send msgs
+     | True =>
+       balanceList <- playerBalance;
+       balance = builtin get balanceList winner;
+       match balance with
+         | None =>
+           earnings <- weeklyPredictionPot;
+           playerBalance[winner] := earnings;
+           weeklyPredictionPot := zero
+         | Some balance =>
+            earnings <- weeklyPredictionPot;
+            newBalance = builtin add balance earnings;
+            playerBalance[winner] := newBalance;
+            
+            weeklyPredictionPot := zero
+        end
+  end
+end
+
+transition setMonthlyPredictWinner(winner: ByStr20)
+  sender_is_owner = builtin eq _sender owner;
+  match sender_is_owner with
+     | False =>
+          msg = {_tag: "";
+                _recipient: _sender;
+                _amount: zero;
+                code: not_owner_code};
+          msgs = one_msg msg;
+          send msgs
+     | True =>
+       balanceList <- playerBalance;
+       balance = builtin get balanceList winner;
+       match balance with
+         | None =>
+           earnings <- monthlyPredictionPot;
+           playerBalance[winner] := earnings;
+           monthlyPredictionPot := zero
+         | Some balance =>
+            earnings <- monthlyPredictionPot;
+            newBalance = builtin add balance earnings;
+            playerBalance[winner] := newBalance;
+            
+            monthlyPredictionPot := zero
+        end
+  end
+end
+
+transition withdrawDeveloperVault()
+  bal <- developerVault;
+  sender_is_owner = builtin eq _sender owner;
+  match sender_is_owner with
+     | False =>
+          msg = {_tag: "";
+                _recipient: _sender;
+                _amount: zero;
+                code: not_owner_code};
+          msgs = one_msg msg;
+          send msgs
+     | True =>
+        accept;
+        msg = {_tag: "";
+                _recipient: _sender;
+                _amount: bal;
+                code: accepted_code};
+        msgs = one_msg msg;
+        send msgs;
+        developerVault := zero
+  end
+end
+
+
+(*----------------------------*)
+
+(*      Game transitions      *)
+
+(*----------------------------*)
+
+transition withdraw()
+  balanceList <- playerBalance;
+  balances = builtin get balanceList _sender;
+    match balances with
+    | None =>
+      msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0; code : code_invalid_params};
+      msgs = one_msg msg;
+      send msgs
+    | Some balance =>
+      not_null = builtin eq balance zero;
+      match not_null with
+        | True =>
+          msg = {_tag: "";
+                _recipient: _sender;
+                _amount: zero;
+                code: no_withdraw_balance};
+          msgs = one_msg msg;
+          send msgs
+        | False =>
+          playerBalance[_sender] := zero;
+          accept;
+          msg = {_tag: "";
+                  _recipient: _sender;
+                  _amount: balance;
+                  code: successful_withdraw};
+          msgs = one_msg msg;
+          send msgs
+        end
+    end
+end
+
+transition setDailyPrediction(price: String)
+  pot <- dailyPredictionPot;
+  first_prediction = builtin eq pot zero;
+  
+  (* if the pot is zero start a new game *)
+  match first_prediction with
+    | True =>
+      (* check if the predicted price has atleast 6 characters *)
+      price_length = builtin strlen price;
+      min_length = Uint32 6;
+      min_length = builtin lt price_length min_length;
+      match min_length with
+          (* not enough characters *)
+          | True =>
+            msg = {_tag: "";
+            _recipient: _sender;
+            _amount: zero;
+             code: code_invalid_params };
+            msgs = one_msg msg;
+            send msgs
+          | False =>
+            (* enough characters, check if the sent ZIL amount is enough *)
+            predictPrice <- dailyPredictPrice;
+            less_than_price = builtin lt _amount predictPrice;
+            match less_than_price with
+              | True =>
+                (* not enough ZIL sent *)
+                msg = {_tag: "";
+                  _recipient: _sender;
+                  _amount: zero;
+                  code: not_enough_zil_code };
+                msgs = one_msg msg;
+                send msgs
+              | False =>
+                (* Enough ZIL sent, increase round number by 1 *)
+                currentRound <- dailyPredictRound;
+                increment = Uint128 1;
+                
+                newRound = builtin add currentRound increment;
+                
+                (* Increment number *)
+                dailyPredictRound := newRound;
+                    
+                (* accept ZIL and save prediction + round number player made prediction on *)
+                accept;
+                playerDailyPrediction[_sender] := price;
+                playerDailyRound[_sender] := newRound;
+                    
+                (* increase pot and set dev fee *)
+                onePercent = builtin div _amount divideTotal;
+                pot = builtin mul onePercent potCut;
+                devFee = builtin mul onePercent potDevFee;
+              
+                currentPot <- dailyPredictionPot;
+                pot = builtin add pot currentPot;
+                dailyPredictionPot := pot;
+                
+                currentVault <- developerVault;
+                devFee = builtin add devFee currentVault;
+                developerVault := devFee;
+                  
+                (* increase timer to 25 hours, 1 hour extra for betting period *)
+                currentBlock <- & BLOCKNUMBER;
+                increaseBlocksBy <- dailyPredictStartTimer;
+                setTimer = builtin badd currentBlock increaseBlocksBy;
+                dailyPredictionTimer := setTimer;
+                  
+                msg = {_tag: "";
+                  _recipient: _sender;
+                  _amount: zero;
+                  code: accepted_code };
+                msgs = one_msg msg;
+                send msgs
+            end
+        end
+    | False =>
+      (* pot isn't zero, check if we can join it *)
+      endBlock <- dailyPredictionTimer;
+      currentBlock <- & BLOCKNUMBER;
+      minTimer <- dailyPredictMinTimer;
+      
+      blocksLeft = builtin bsub endBlock currentBlock;
+      after_deadline = builtin lt blocksLeft minTimer;
+      (* are there less than 1660 blocks left? *)
+      match after_deadline with
+      | True =>
+        (* Less than 1660 blocks left, cannot join *)
+        msg = {_tag: "";
+          _recipient: _sender;
+          _amount: zero;
+        code: game_started };
+        msgs = one_msg msg;
+        send msgs
+      | False =>
+        (* More than 1660 blocks left, let player make prediction  *)
+        price_length = builtin strlen price;
+        (* check if the predicted price has atleast 6 characters *)
+        min_length = Uint32 6;
+        min_length = builtin lt price_length min_length;
+        match min_length with
+          (* not enough characters *)
+          | True =>
+            msg = {_tag: "";
+              _recipient: _sender;
+              _amount: zero;
+            code: code_invalid_params };
+            msgs = one_msg msg;
+            send msgs
+          | False =>
+            (* enough characters, check if the sent ZIL amount is enough *)
+            predictPrice <- dailyPredictPrice;
+            less_than_price = builtin lt _amount predictPrice;
+            match less_than_price with
+              | True =>
+                (* not enough ZIL sent *)
+                msg = {_tag: "";
+                  _recipient: _sender;
+                  _amount: zero;
+                code: not_enough_zil_code };
+                msgs = one_msg msg;
+                send msgs
+              | False =>
+                (* accept ZIL and save prediction + round number player made prediction on *)
+                currentRound <- dailyPredictRound;
+                    
+                accept;
+                playerDailyPrediction[_sender] := price;
+                playerDailyRound[_sender] := currentRound;
+                        
+                (* increase pot and set dev fee *)
+                onePercent = builtin div _amount divideTotal;
+                pot = builtin mul onePercent potCut;
+                devFee = builtin mul onePercent potDevFee;
+              
+                currentPot <- dailyPredictionPot;
+                pot = builtin add pot currentPot;
+                dailyPredictionPot := pot;
+                
+                currentVault <- developerVault;
+                devFee = builtin add devFee currentVault;
+                developerVault := devFee;
+                    
+                msg = {_tag: "";
+                  _recipient: _sender;
+                  _amount: zero;
+                  code: accepted_code };
+                msgs = one_msg msg;
+                send msgs
+            end
+        end
+    end
+  end
+end
+
+transition setWeeklyPrediction(price: String)
+  pot <- weeklyPredictionPot;
+  first_prediction = builtin eq pot zero;
+  
+  (* if the pot is zero start a new game *)
+  match first_prediction with
+    | True =>
+      (* check if the predicted price has atleast 6 characters *)
+      price_length = builtin strlen price;
+      min_length = Uint32 6;
+      min_length = builtin lt price_length min_length;
+      match min_length with
+          (* not enough characters *)
+          | True =>
+            msg = {_tag: "";
+            _recipient: _sender;
+            _amount: zero;
+             code: code_invalid_params };
+            msgs = one_msg msg;
+            send msgs
+          | False =>
+            (* enough characters, check if the sent ZIL amount is enough *)
+            predictPrice <- weeklyPredictPrice;
+            less_than_price = builtin lt _amount predictPrice;
+            match less_than_price with
+              | True =>
+                (* not enough ZIL sent *)
+                msg = {_tag: "";
+                  _recipient: _sender;
+                  _amount: zero;
+                  code: not_enough_zil_code };
+                msgs = one_msg msg;
+                send msgs
+              | False =>
+                (* Enough ZIL sent, increase round number by 1 *)
+                currentRound <- weeklyPredictRound;
+                increment = Uint128 1;
+                
+                newRound = builtin add currentRound increment;
+                
+                (* Increment number *)
+                weeklyPredictRound := newRound;
+                    
+                (* accept ZIL and save prediction + round number player made prediction on *)
+                accept;
+                playerWeeklyPrediction[_sender] := price;
+                playerWeeklyRound[_sender] := newRound;
+                    
+                (* increase pot and set dev fee *)
+                onePercent = builtin div _amount divideTotal;
+                pot = builtin mul onePercent potCut;
+                devFee = builtin mul onePercent potDevFee;
+              
+                currentPot <- weeklyPredictionPot;
+                pot = builtin add pot currentPot;
+                weeklyPredictionPot := pot;
+                
+                currentVault <- developerVault;
+                devFee = builtin add devFee currentVault;
+                developerVault := devFee;
+                  
+                (* increase timer to 25 hours, 1 hour extra for betting period *)
+                currentBlock <- & BLOCKNUMBER;
+                increaseBlocksBy <- weeklyPredictStartTimer;
+                setTimer = builtin badd currentBlock increaseBlocksBy;
+                weeklyPredictionTimer := setTimer;
+                  
+                msg = {_tag: "";
+                  _recipient: _sender;
+                  _amount: zero;
+                  code: accepted_code };
+                msgs = one_msg msg;
+                send msgs
+            end
+        end
+    | False =>
+      (* pot isn't zero, check if we can join it *)
+      endBlock <- weeklyPredictionTimer;
+      currentBlock <- & BLOCKNUMBER;
+      minTimer <- weeklyPredictMinTimer;
+      
+      blocksLeft = builtin bsub endBlock currentBlock;
+      after_deadline = builtin lt blocksLeft minTimer;
+      (* are there less than 11620 blocks left? *)
+      match after_deadline with
+      | True =>
+        (* Less than 11620 blocks left, cannot join *)
+        msg = {_tag: "";
+          _recipient: _sender;
+          _amount: zero;
+        code: game_started };
+        msgs = one_msg msg;
+        send msgs
+      | False =>
+        (* More than 11620 blocks left, let player make prediction  *)
+        price_length = builtin strlen price;
+        (* check if the predicted price has atleast 6 characters *)
+        min_length = Uint32 6;
+        min_length = builtin lt price_length min_length;
+        match min_length with
+          (* not enough characters *)
+          | True =>
+            msg = {_tag: "";
+              _recipient: _sender;
+              _amount: zero;
+            code: code_invalid_params };
+            msgs = one_msg msg;
+            send msgs
+          | False =>
+            (* enough characters, check if the sent ZIL amount is enough *)
+            predictPrice <- weeklyPredictPrice;
+            less_than_price = builtin lt _amount predictPrice;
+            match less_than_price with
+              | True =>
+                (* not enough ZIL sent *)
+                msg = {_tag: "";
+                  _recipient: _sender;
+                  _amount: zero;
+                code: not_enough_zil_code };
+                msgs = one_msg msg;
+                send msgs
+              | False =>
+                (* accept ZIL and save prediction + round number player made prediction on *)
+                currentRound <- weeklyPredictRound;
+                    
+                accept;
+                playerWeeklyPrediction[_sender] := price;
+                playerWeeklyRound[_sender] := currentRound;
+                        
+                (* increase pot and set dev fee *)
+                onePercent = builtin div _amount divideTotal;
+                pot = builtin mul onePercent potCut;
+                devFee = builtin mul onePercent potDevFee;
+              
+                currentPot <- weeklyPredictionPot;
+                pot = builtin add pot currentPot;
+                weeklyPredictionPot := pot;
+                
+                currentVault <- developerVault;
+                devFee = builtin add devFee currentVault;
+                developerVault := devFee;
+                    
+                msg = {_tag: "";
+                  _recipient: _sender;
+                  _amount: zero;
+                  code: accepted_code };
+                msgs = one_msg msg;
+                send msgs
+            end
+        end
+    end
+  end
+end
+
+transition setMonthlyPrediction(price: String)
+  pot <- monthlyPredictionPot;
+  first_prediction = builtin eq pot zero;
+  
+  (* if the pot is zero start a new game *)
+  match first_prediction with
+    | True =>
+      (* check if the predicted price has atleast 6 characters *)
+      price_length = builtin strlen price;
+      min_length = Uint32 6;
+      min_length = builtin lt price_length min_length;
+      match min_length with
+          (* not enough characters *)
+          | True =>
+            msg = {_tag: "";
+            _recipient: _sender;
+            _amount: zero;
+             code: code_invalid_params };
+            msgs = one_msg msg;
+            send msgs
+          | False =>
+            (* enough characters, check if the sent ZIL amount is enough *)
+            predictPrice <- monthlyPredictPrice;
+            less_than_price = builtin lt _amount predictPrice;
+            match less_than_price with
+              | True =>
+                (* not enough ZIL sent *)
+                msg = {_tag: "";
+                  _recipient: _sender;
+                  _amount: zero;
+                  code: not_enough_zil_code };
+                msgs = one_msg msg;
+                send msgs
+              | False =>
+                (* Enough ZIL sent, increase round number by 1 *)
+                currentRound <- monthlyPredictRound;
+                increment = Uint128 1;
+                
+                newRound = builtin add currentRound increment;
+                
+                (* Increment number *)
+                monthlyPredictRound := newRound;
+                    
+                (* accept ZIL and save prediction + round number player made prediction on *)
+                accept;
+                playerMonthlyPrediction[_sender] := price;
+                playerMonthlyRound[_sender] := newRound;
+                    
+                (* increase pot and set dev fee *)
+                onePercent = builtin div _amount divideTotal;
+                pot = builtin mul onePercent potCut;
+                devFee = builtin mul onePercent potDevFee;
+              
+                currentPot <- monthlyPredictionPot;
+                pot = builtin add pot currentPot;
+                monthlyPredictionPot := pot;
+                
+                currentVault <- developerVault;
+                devFee = builtin add devFee currentVault;
+                developerVault := devFee;
+                  
+                (* increase timer to 25 hours, 1 hour extra for betting period *)
+                currentBlock <- & BLOCKNUMBER;
+                increaseBlocksBy <- monthlyPredictStartTimer;
+                setTimer = builtin badd currentBlock increaseBlocksBy;
+                monthlyPredictionTimer := setTimer;
+                  
+                msg = {_tag: "";
+                  _recipient: _sender;
+                  _amount: zero;
+                  code: accepted_code };
+                msgs = one_msg msg;
+                send msgs
+            end
+        end
+    | False =>
+      (* pot isn't zero, check if we can join it *)
+      endBlock <- monthlyPredictionTimer;
+      currentBlock <- & BLOCKNUMBER;
+      minTimer <- monthlyPredictMinTimer;
+      
+      blocksLeft = builtin bsub endBlock currentBlock;
+      after_deadline = builtin lt blocksLeft minTimer;
+      (* are there less than 11620 blocks left? *)
+      match after_deadline with
+      | True =>
+        (* Less than 11620 blocks left, cannot join *)
+        msg = {_tag: "";
+          _recipient: _sender;
+          _amount: zero;
+        code: game_started };
+        msgs = one_msg msg;
+        send msgs
+      | False =>
+        (* More than 11620 blocks left, let player make prediction  *)
+        price_length = builtin strlen price;
+        (* check if the predicted price has atleast 6 characters *)
+        min_length = Uint32 6;
+        min_length = builtin lt price_length min_length;
+        match min_length with
+          (* not enough characters *)
+          | True =>
+            msg = {_tag: "";
+              _recipient: _sender;
+              _amount: zero;
+            code: code_invalid_params };
+            msgs = one_msg msg;
+            send msgs
+          | False =>
+            (* enough characters, check if the sent ZIL amount is enough *)
+            predictPrice <- monthlyPredictPrice;
+            less_than_price = builtin lt _amount predictPrice;
+            match less_than_price with
+              | True =>
+                (* not enough ZIL sent *)
+                msg = {_tag: "";
+                  _recipient: _sender;
+                  _amount: zero;
+                code: not_enough_zil_code };
+                msgs = one_msg msg;
+                send msgs
+              | False =>
+                (* accept ZIL and save prediction + round number player made prediction on *)
+                currentRound <- monthlyPredictRound;
+                    
+                accept;
+                playerMonthlyPrediction[_sender] := price;
+                playerMonthlyRound[_sender] := currentRound;
+                        
+                (* increase pot and set dev fee *)
+                onePercent = builtin div _amount divideTotal;
+                pot = builtin mul onePercent potCut;
+                devFee = builtin mul onePercent potDevFee;
+              
+                currentPot <- monthlyPredictionPot;
+                pot = builtin add pot currentPot;
+                monthlyPredictionPot := pot;
+                
+                currentVault <- developerVault;
+                devFee = builtin add devFee currentVault;
+                developerVault := devFee;
+                    
+                msg = {_tag: "";
+                  _recipient: _sender;
+                  _amount: zero;
+                  code: accepted_code };
+                msgs = one_msg msg;
+                send msgs
+            end
+        end
+    end
+  end
+end
