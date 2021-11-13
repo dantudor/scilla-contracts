@@ -1,0 +1,300 @@
+scilla_version 0
+import PairUtils
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+library FungibleVendor_fixed
+
+let one_msg =
+  fun (m : Message) =>
+    let e = Nil {Message} in
+    Cons {Message} m e
+
+let two_msgs =
+  fun (msg1 : Message) =>
+  fun (msg2 : Message) =>
+    let msgs_tmp = one_msg msg2 in
+    Cons {Message} msg1 msgs_tmp
+
+type Error =
+| NonOwnerCannotCall
+| NoPriceSet
+| InsufficientFunds
+| TokenSoldOut
+| CodeContractNotPaused
+| CodeContractPaused
+| InsufficientTokens
+| IncorrectToken
+| IncorrectSeller
+
+
+(* Error events *)
+let mk_error_event =
+  fun (err : Error) =>
+  let err_code =
+    match err with
+    | NonOwnerCannotCall        => Int32 -1
+    | NoPriceSet                => Int32 -2
+    | InsufficientFunds         => Int32 -3
+    | TokenSoldOut              => Int32 -4
+    | CodeContractNotPaused     => Int32 -5
+    | CodeContractPaused        => Int32 -6
+    | InsufficientTokens        => Int32 -7
+    | IncorrectToken            => Int32 -8
+    | IncorrectSeller           => Int32 -9
+
+    end in
+    { _exception : "Error"; code : err_code }
+
+let false = False
+let true = True
+let zero = Uint128 0
+
+(***************************************************)
+(*             The contract definition             *)
+(*                                                 *)
+(* This contract enables a token owner to sell a   *)
+(* set number of tokens at a set price             *)
+(* to individual buyers in a decentralized and     *)
+(* fair manner.                                    *)
+(*                                                 *)
+(* WARNING: If the owner loses their private key   *)
+(* they will be unable to interact with the smart  *)
+(* contract, for this reason a recovery wallet may *)
+(* be desirable to set in order to prevent losses. *)
+(*                                                 *)
+(***************************************************)
+contract FungibleVendor
+(
+owner           : ByStr20,
+token_address   : ByStr20,
+token_seller    : ByStr20
+)
+
+(*               Field Definitions              *)
+field contract_owner: ByStr20 = owner
+field paused : Bool = false
+field pending_owner : Option ByStr20 = None {ByStr20}
+field price : Option (Pair Uint128 Uint128) = None {(Pair Uint128 Uint128)}
+field remaining : Uint128 = zero
+
+(*                Begin Procedures              *)
+
+procedure ThrowError (err : Error)
+  e = mk_error_event err;
+  throw e
+end
+
+procedure IsOwner()
+  wallet <- contract_owner;
+  is_wallet_owner = builtin eq wallet _sender;
+  match is_wallet_owner with
+  | True =>
+  | False =>
+    err = NonOwnerCannotCall;
+    ThrowError err
+  end
+end
+
+procedure IsPaused()
+  pause_status <- paused;
+  match pause_status with
+  | False =>
+    err = CodeContractNotPaused;
+    ThrowError err
+  | True =>
+  end
+end
+procedure IsNotPaused()
+  pause_status <- paused;
+  match pause_status with
+  | True =>
+    err = CodeContractPaused;
+    ThrowError err
+  | False =>
+  end
+end
+
+(*  Send the token amount and accept sale funds  *)
+(* refunds are issued for overpayment *)
+(*transition TransferFrom(from: ByStr20, to: ByStr20, amount: Uint128)*)
+procedure sale(token_amount: Uint128)
+  current_price <- price;
+  match current_price with
+  | None =>
+    err = NoPriceSet;
+    ThrowError err
+  | Some rate =>
+    current_price_base = let fst_uint128_uint128 = @fst Uint128 Uint128 in
+      fst_uint128_uint128 rate;
+    current_price_quote = let snd_uint128_uint128 = @snd Uint128 Uint128 in
+      snd_uint128_uint128 rate;
+    current_left <- remaining;
+    net_cost_numerator = builtin mul current_price_quote token_amount;
+    net_cost = builtin div net_cost_numerator current_price_base;
+    insufficient_payment = builtin lt _amount net_cost;
+    not_enough_tokens = builtin lt current_left token_amount;
+    match not_enough_tokens with
+    | True =>
+        err = InsufficientTokens;
+        ThrowError err
+    | False =>
+      match insufficient_payment with
+      | False =>
+        overpaying = builtin lt net_cost _amount;
+        accept;
+        rem <- remaining;
+        new_rem = builtin sub rem token_amount;
+        remaining := new_rem;
+        match overpaying with
+          | True =>
+             refund = builtin sub _amount net_cost;
+             msg_to_token = {_tag: "Transfer"; _recipient: token_address ; _amount: zero; to:_sender; amount:token_amount};
+             refund_msg = {_tag: "AddFunds"; _recipient: _sender; _amount: refund};
+             msgs = two_msgs msg_to_token refund_msg;
+             send msgs
+          | False =>
+            msg_to_token = {_tag: "Transfer"; _recipient: token_address ; _amount: zero; to:_sender; amount:token_amount};
+            msgs = one_msg msg_to_token;
+            send msgs
+        end
+      | True =>
+        err = InsufficientFunds;
+        ThrowError err
+      end
+    end
+  end
+end
+
+procedure update_price(new_price_base: Uint128, new_price_quote: Uint128)
+  new_price = Pair {Uint128 Uint128} new_price_base new_price_quote;
+  new_price_option = Some {(Pair Uint128 Uint128)} new_price;
+  price:=new_price_option
+end
+
+procedure IsNotSoldOut()
+  current_left <- remaining;
+  any_left = builtin lt zero current_left;
+  match any_left with
+    | False =>
+      err = TokenSoldOut;
+      ThrowError err
+    | True =>
+  end
+end
+
+(*                    Begin Transitions                       *)
+
+transition AddFunds()
+  IsNotPaused;
+  IsOwner;
+  accept
+end
+
+transition Pause()
+  IsNotPaused;
+  IsOwner;
+  paused := true;
+  e = { _eventname : "Contract Paused" };
+  event e
+end
+
+transition Resume()
+  IsPaused;
+  IsOwner;
+  paused := false;
+  e = { _eventname : "Contract Unpaused" };
+  event e
+end
+
+(*      SAFE OWNERSHIP TRANSFER TRANSITIONS   *)
+
+transition RequestOwnershipTransfer(new_owner: ByStr20)
+  IsOwner;
+  po = Some {ByStr20} new_owner;
+  pending_owner := po
+end
+
+transition ConfirmOwnershipTransfer()
+  optional_po <- pending_owner;
+  match optional_po with
+  | Some pend_owner =>
+      caller_is_new_owner = builtin eq _sender pend_owner;
+      match caller_is_new_owner with
+      | True =>
+          (* transfer ownership *)
+          contract_owner := pend_owner;
+          none = None {ByStr20};
+          pending_owner := none
+      | False => (* the caller is not the new owner, do nothing *)
+      end
+  | None => (* ownership transfer is not in-progress, do nothing *)
+  end
+end
+
+
+(*       Vending Logic          *)
+(* overpaying is handled as a donation, a refund will not be issued *)
+transition Buy(token_amount: Uint128)
+  IsNotPaused;
+  IsNotSoldOut;
+  sale token_amount
+end
+
+
+transition WithdrawFunds(amount:Uint128, recipient: ByStr20)
+  IsOwner;
+  msg_to_recipient = {_tag: "AddFunds"; _recipient: recipient ; _amount: amount};
+  msgs = one_msg msg_to_recipient;
+  send msgs
+end
+
+transition WithdrawTokens(amount:Uint128, recipient:ByStr20)
+  IsOwner;
+  rem<-remaining;
+  new_rem = builtin sub rem amount;
+  remaining := new_rem;
+  msg_to_token = {_tag: "Transfer"; _recipient: token_address ; _amount: zero; to:recipient; amount:amount};
+  msgs = one_msg msg_to_token;
+  send msgs
+end
+
+(* NOTE: *)
+(* - price is set as a relation of some token amount to some ZIL amount, this allows to use any precision in token and to set any price (less than or greater than ZIL price). *)
+(* - use base units for both values (convert ZIL to Qa and token units to base units). *)
+(* ARGS: *)
+(* - new_price_base: price numerator (amount of tokens in base units) *)
+(* - new_price_quote: price denominator (corresponding amount of ZIL in Qa)  *)
+transition UpdatePrice(new_price_base: Uint128, new_price_quote: Uint128)
+  IsNotPaused;
+  IsOwner;
+  update_price new_price_base new_price_quote
+end
+
+(*  msg_to_sender = {_tag : "TransferSuccessCallBack"; _recipient : _sender; _amount : zero;
+                  sender : _sender; recipient : to; amount : amount};*)
+transition  TransferSuccessCallBack( sender: ByStr20, recipient: ByStr20, amount:Uint128)
+end
+
+(*msg_to_recipient = {_tag : "RecipientAcceptTransfer"; _recipient : to; _amount : zero;
+                      sender : _sender; recipient : to; amount : amount};*)
+transition  RecipientAcceptTransfer( sender: ByStr20, recipient: ByStr20, amount:Uint128)
+  (* only accept transfers from the designated contract, and the designated token owner must be the sender*)
+  correct_contract = builtin eq _sender token_address;
+  match correct_contract with
+    | False =>
+      err = IncorrectToken;
+      ThrowError err
+    | True =>
+    correct_sender = builtin eq sender token_seller;
+    match correct_sender with
+      | False =>
+        err = IncorrectSeller;
+        ThrowError err
+      | True =>
+      current_remaining <- remaining;
+      total_remaining = builtin add current_remaining amount;
+      remaining := total_remaining
+    end
+  end
+end

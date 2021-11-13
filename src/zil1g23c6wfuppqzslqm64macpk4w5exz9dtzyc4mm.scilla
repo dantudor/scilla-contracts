@@ -1,0 +1,57 @@
+scilla_version 0
+import BoolUtils
+
+library ZilWarVault
+
+let one_msg = 
+  fun (msg : Message) => 
+  let nil_msg = Nil {Message} in
+  Cons {Message} msg nil_msg
+
+let zero = Uint128 0
+
+let accepted_code = Uint32 0
+let not_owner_code = Uint32 1
+
+let true = True
+  
+contract DotQVault2(owner: ByStr20)
+
+
+(*----------------------------*)
+
+(*        transitions         *)
+
+(*----------------------------*)
+
+transition withdraw(sendTo: ByStr20, amount: Uint128)
+  sender_is_owner = builtin eq _sender owner;
+    match sender_is_owner with
+    | False =>
+      msg = {_tag: "";
+            _recipient: _sender;
+            _amount: zero;
+            code: not_owner_code};
+      msgs = one_msg msg;
+      send msgs;
+      e = {_eventname : "withdraw"; sendTo : sendTo; amount : amount; code : not_owner_code};
+      event e
+    | True =>
+      msg = {_tag: "";
+            _recipient: sendTo;
+            _amount: amount;
+            code: accepted_code};
+      msgs = one_msg msg;
+      send msgs;
+      e = {_eventname : "withdraw"; sendTo : sendTo; amount : amount; code : accepted_code};
+      event e
+    end
+end
+
+transition deposit()
+  accept;
+  e = {_eventname : "deposit";
+          user: _sender;
+          amount: _amount};
+  event e
+end

@@ -1,0 +1,193 @@
+scilla_version 0
+
+import BoolUtils
+library UnicutesBidContractLibrary
+
+let zero = Uint128 0
+let one = Uint128 1
+let one_uint256 = Uint256 1
+let uint32_one = Uint32 1
+let false = False
+let true = True
+
+(* User-defined ADTs *)
+type Dummy =
+| Dummy
+
+type BidState =
+| Accepted
+| Withdrawn
+| Open
+
+
+(* amount, buyer, state *)
+type BidLog =
+| BidLog of Uint128 ByStr20 BidState
+
+let bid_state_accepted = Accepted
+let bid_state_withdrawn = Withdrawn
+let bid_state_open = Open
+
+
+let verdad = Dummy
+
+(* returns singleton List Message *)
+let one_msg =
+    fun (msg : Message) =>
+        let nil_msg = Nil {Message} in
+        Cons {Message} msg nil_msg
+
+(* Error codes *)
+type Error =
+| CodeNotOwner
+| CodeIllegalOperation
+| CodeAlreadyCreatedOffer
+| CodeBidDontExist
+let make_error =
+  fun (result: Error) =>
+    let result_code = 
+      match result with
+      | CodeNotOwner            => Int32 -1
+      | CodeIllegalOperation    => Int32 -2
+      | CodeAlreadyCreatedOffer => Int32 -3
+      | CodeBidDontExist        => Int32 -4
+      end
+    in
+    { _exception : "Error"; code : result_code }
+
+contract UnicutesBidContract
+(
+  unicutes_nft_contract: ByStr20,
+  name : String,
+  symbol: String
+)
+
+field bidder_tokens : Map ByStr20 (Map Uint256 Dummy) = Emp ByStr20 (Map Uint256 Dummy)
+field token_bidders : Map Uint256 (Map ByStr20 Uint128) = Emp Uint256 (Map ByStr20 Uint128)
+field total_bids : Uint256 = Uint256 0
+
+(* for historic reasons *)
+field token_bidHistory : Map Uint256 (Map BNum BidLog) = Emp Uint256 (Map BNum BidLog) 
+
+procedure ThrowError(err: Error)
+  e = make_error err;
+  throw e
+end
+
+(* ==================== *)
+(* Anonymous Procedures *)
+(* ==================== *)
+
+procedure IncrementTotalBids()
+  current_total_bids <- total_bids;
+  new_total_bids = builtin add current_total_bids one_uint256;
+  total_bids := new_total_bids
+end
+
+procedure HasAlreadyCreatedBid(token_id: Uint256)
+  option_bid <- token_bidders[token_id][_sender];
+  match option_bid with
+  | Some some_bid =>
+    err = CodeAlreadyCreatedOffer;
+    ThrowError err
+  | None =>
+  end
+end
+
+procedure RegisterBid(token_id:Uint256)
+  bidder_tokens[_sender][token_id] := verdad;
+  token_bidders[token_id][_sender] := _amount;
+  IncrementTotalBids
+end
+
+procedure IsBidValid()
+  is_equal = builtin eq _amount zero;
+  match is_equal with
+  | True =>
+    err = CodeIllegalOperation;
+    ThrowError err
+  | False =>
+  end
+end
+
+procedure LogBidAction(token_id: Uint256, bidder: ByStr20, amount: Uint128, state: BidState)
+  current_bnum <- & BLOCKNUMBER;
+  new_accepted_bid = BidLog amount bidder state;
+  token_bidHistory[token_id][current_bnum] := new_accepted_bid
+end
+
+(* cleanup before transfer or withdrawal starts *)
+procedure Cleanup(token_id: Uint256, bidder: ByStr20)
+    delete token_bidders[token_id][bidder];
+    delete bidder_tokens[bidder][token_id]
+end
+
+(* ===================== *)
+(* Anonymous Transitions *)
+(* ===================== *)
+
+transition WithdrawBid(token_id: Uint256)
+  option_bid_amount <- token_bidders[token_id][_sender];
+  match option_bid_amount with
+  | None =>
+    err = CodeBidDontExist;
+    ThrowError err
+  | Some bid_amount =>
+    Cleanup token_id _sender;
+    
+    (* return money to bidder *)
+    msg_to_bidder  = {_tag : ""; _recipient : _sender; _amount : bid_amount};
+    msgs_to_bidder = one_msg msg_to_bidder;
+    send msgs_to_bidder;
+
+    e = {_eventname: "WithdrawBid"; token_id: token_id; bidder: _sender; bid_amount: bid_amount};
+    event e;
+    
+    LogBidAction token_id _sender bid_amount bid_state_withdrawn
+  end
+end
+
+transition AcceptBid(token_id: Uint256, bidder: ByStr20)
+  option_bid_amount <- token_bidders[token_id][bidder];
+  match option_bid_amount with
+  | None =>
+    err = CodeBidDontExist;
+    ThrowError err
+  | Some bid_amount =>
+    (* cleanup before transfer starts *)
+    Cleanup token_id bidder;
+    
+    (* transfer unicute to bidder *)
+    msg_to_unicute_sc = {_tag : "TransferFrom"; _recipient: unicutes_nft_contract; _amount: zero; to: bidder; token_id: token_id};
+    msgs_to_unicute_sc = one_msg msg_to_unicute_sc;
+    send msgs_to_unicute_sc;
+    
+    (* send money to owner *)
+    msg_to_bidder  = {_tag : ""; _recipient : _sender; _amount : bid_amount};
+    msgs_to_bidder = one_msg msg_to_bidder;
+    send msgs_to_bidder;
+    
+    e = {_eventname: "AcceptBid"; token_id: token_id; bidder: bidder; owner: _sender; bid_amount: bid_amount};
+    event e;
+    
+    LogBidAction token_id bidder bid_amount bid_state_accepted
+  end
+end
+
+transition TransferFromSuccessCallBack(from: ByStr20, recipient: ByStr20, token_id: Uint256)
+  e = {_eventname: "TransferFromSuccessCallBack"; initiator: _sender; from: from; recipient: recipient; token_id: token_id};
+  event e
+end
+
+(* Create an offer on a unicute! *)
+transition CreateOffer(token_id: Uint256)
+  HasAlreadyCreatedBid token_id;
+  IsBidValid;
+  accept;
+  RegisterBid token_id;
+  
+  e = {_eventname: "CreateOffer"; initiator: _sender; token_id: token_id; bidder: _sender; amount: _amount};
+  event e;
+  
+  LogBidAction token_id _sender _amount bid_state_open
+end

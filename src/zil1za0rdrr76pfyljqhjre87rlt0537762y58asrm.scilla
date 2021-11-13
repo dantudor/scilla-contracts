@@ -1,0 +1,59 @@
+scilla_version 0
+
+(*A simple Contract to "bury" (remove) SPW from any use. *)
+(*anyone can send SPW to this contract.                  *)
+(*There is no way to remove tokens from this contract!   *)
+(*Once tokens are sent to this contract it is permanent! *)
+(*This will not effect the total supply of the token.    *)
+
+(*The transitions in this contract are only used by the SPW contract to allow the sending of SPW to this contract*)
+
+(*The reason we are "Burying" SPW, at the time of SPW creation, we saw no reason to Burn the token, so a Burn transition was not implemented.*)
+(*to remedy this, we created this contract to "Bury" SPW. our version of Burning, that removes SPW from use. *)
+
+
+library SPW_Bury
+
+let one_msg = 
+  fun (msg : Message) => 
+    let nil_msg = Nil {Message} in
+    Cons {Message} msg nil_msg
+    
+
+let spw_Bury_Successful = Int32 1
+
+let codeWrongToken = Int32 2
+
+
+
+contract SPW_Bury
+(*  Parameters *)
+(tokenAddress : ByStr20)
+
+
+(*Accept Tokens*) 
+transition RecipientAcceptTransfer (sender : ByStr20, recipient : ByStr20, amount : Uint128) 
+ isTokenContract = builtin eq tokenAddress _sender;
+   match isTokenContract with
+     |True =>
+        
+        e = {_eventname: "Bury Successful"; amount: amount; sender: sender; code: spw_Bury_Successful};
+          event e
+       
+     |False => 
+       
+      err = { _exception : "CodeWrongToken"; code : codeWrongToken };
+      throw err
+ 
+    end 
+end 
+
+
+
+transition TransferSuccessCallBack(
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+
+end

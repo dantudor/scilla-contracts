@@ -1,0 +1,109 @@
+
+scilla_version 0
+
+import PairUtils
+
+library Config
+type Error =
+| NotAuthorized
+| NoStagedAdmin
+
+let make_error =
+fun (result: Error) =>
+let result_code =
+match result with
+| NotAuthorized => Int32 -1
+| NoStagedAdmin => Int32 -2
+end
+in
+{ _exception: "Error"; code: result_code }
+
+let zeroByStr20 = 0x0000000000000000000000000000000000000000
+let option_value = tfun 'A => fun( default: 'A ) => fun( input: Option 'A) =>
+  match input with
+  | Some v => v
+  | None => default end
+let option_bystr20_value = let f = @option_value ByStr20 in f zeroByStr20
+
+contract Config(
+    init_admin: ByStr20,
+    init_reputation: ByStr20 with contract field address_to_discount: Map ByStr20 Uint128 end
+)
+field admin: ByStr20 = init_admin
+field staging_admin: Option ByStr20 = None {ByStr20}
+field config_bystr20: Map String ByStr20 = Emp String ByStr20
+field config_uint128: Map String Uint128 = Emp String Uint128
+field reputation: ByStr20 with contract field address_to_discount: Map ByStr20 Uint128 end = init_reputation
+
+procedure ThrowError(err: Error)
+    e = make_error err;
+    throw e
+end
+
+
+
+procedure IsAdmin()
+    tmp <- admin;
+    is_admin = builtin eq tmp _sender;
+    match is_admin with
+    | False => e = NotAuthorized; ThrowError e
+    | True =>
+    end 
+end
+transition SetStagedAdmin(staged: ByStr20)
+    IsAdmin;
+    opt_staged = Some {ByStr20} staged;
+    staging_admin := opt_staged
+end
+transition ClaimStagedAdmin()
+    option_staged <- staging_admin;
+    staged = option_bystr20_value option_staged;
+    staged_is_sender = builtin eq _sender staged;
+    match staged_is_sender with
+    | False => e = NotAuthorized; ThrowError e
+    | True => admin := staged
+    end
+end
+
+
+
+procedure UpdateByStr(to_update: Pair String ByStr20)
+    fst = @fst String ByStr20;
+    snd = @snd String ByStr20;
+    key = fst to_update;
+    val = snd to_update;
+    config_bystr20[key] := val
+end
+procedure ClearByStr(key_to_clear: String)
+    delete config_bystr20[key_to_clear]
+end
+procedure UpdateUint(to_update: Pair String Uint128)
+    fst = @fst String Uint128;
+    snd = @snd String Uint128;
+    key = fst to_update;
+    val = snd to_update;
+    config_uint128[key] := val
+end
+procedure ClearUint(key_to_clear: String)
+    delete config_uint128[key_to_clear]
+end
+transition UpdateByStrConfig(conf: List (Pair String ByStr20))
+    IsAdmin;
+    forall conf UpdateByStr
+end
+transition ClearByStrConfig(conf: List String)
+    IsAdmin;
+    forall conf ClearByStr
+end
+transition UpdateUintConfig(conf: List (Pair String Uint128))
+    IsAdmin;
+    forall conf UpdateUint
+end
+transition ClearUintConfig(conf: List String)
+    IsAdmin;
+    forall conf ClearUint
+end
+transition UpgradeReputationImpl(new_impl: ByStr20 with contract field address_to_discount: Map ByStr20 Uint128 end)
+    IsAdmin;
+    reputation := new_impl
+end

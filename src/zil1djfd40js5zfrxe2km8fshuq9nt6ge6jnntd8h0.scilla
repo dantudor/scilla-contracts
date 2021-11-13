@@ -1,0 +1,507 @@
+scilla_version 0
+
+import ListUtils IntUtils BoolUtils as BoolU
+
+
+library AuctionLib
+
+type State =
+  |Running of String
+  |Finalized of String
+
+type Auction =
+  | Auction of Uint32 ByStr20 Uint256 Uint128 Uint128 BNum ByStr20 Uint128 ByStr20 State
+
+let runningState = "Running"
+let finalizedState = "Finalized"
+
+let zero128 = Uint128 0
+
+let find_by_id = @list_nth Auction
+
+let one_msg = 
+  fun (msg: Message) => 
+  let nil_msg = Nil {Message} in
+  Cons {Message} msg nil_msg
+  
+let two_msgs =
+  fun (msg1 : Message) =>
+  fun (msg2 : Message) =>
+    let msgs_tmp = one_msg msg2 in
+      Cons {Message} msg1 msgs_tmp
+  
+
+ 
+
+let accepted_code = Int32 0
+let bid_is_zero = Int32 1
+let auction_finalized = Int32 2
+let bid_not_highest  = Int32 3
+let not_owner_of_auction  = Int32 4
+let auction_not_found = Int32 5
+let no_bid_found  = Int32 5
+let auction_not_finalized = Int32 6
+let codeWrongToken = Int32 7
+let notNFTHandlerContract = Int32 8
+let not_contract_owner = Int32 9
+let owner_changed_fee = Int32 10
+let auction_not_started = Int32 11
+let too_late_to_bid = Int32 12
+let auction_still_running = Int32 13
+let auction_has_bids = Int32 14
+  
+contract Auction(spwAddress : ByStr20,
+                nftHold: ByStr20,
+                wallet: ByStr20,
+                contract_owner: ByStr20)
+
+
+
+field auctionCount: Uint32 = Uint32 0
+field auctionsMap : Map Uint32 Auction = Emp Uint32 Auction
+field auctionBids: Map Uint32 (Map ByStr20 Uint128) = Emp Uint32 (Map ByStr20 Uint128)
+field tempReturns: Map Uint32 (Map ByStr20 Uint128) = Emp Uint32 (Map ByStr20 Uint128)
+field auction_fee: Uint128 = Uint128 50 (* 2% fee when NFT sells in auctions 100 / 50 = 2 *)
+
+
+procedure IsContractOwner()
+  is_owner = builtin eq _sender contract_owner;
+  match is_owner with
+  | True => 
+  | False =>
+    e = { _exception : "Not the owner"; code: not_contract_owner };
+      throw e
+  end
+end
+
+
+transition createAuction(nftOwner: ByStr20, tokenAddress: ByStr20, tokenId:Uint256, startPrice:Uint128, duration:Uint128, startTime:BNum)
+
+ is_nftHandlerContract = builtin eq _sender nftHold;
+  match is_nftHandlerContract with
+  | True => 
+    
+ 
+  id <- auctionCount;
+  noBidder = 0x0000000000000000000000000000000000000000;
+  auctionState = Running runningState;
+  newAuction = Auction id tokenAddress tokenId startPrice duration startTime nftOwner zero128 noBidder auctionState ;
+  
+  auctionsMap[id] := newAuction;
+  
+  one = Uint32 1;
+  incremented = builtin add id one;
+  auctionCount := incremented;
+  
+
+  
+  e = {_eventname: "newAuction"; id:id; tokenAddress:tokenAddress; tokenId:tokenId; startPrice:startPrice; duration:duration; startTime:startTime; owner:nftOwner; code:accepted_code};
+  event e
+  | False =>
+   e = { _exception : "Auctions must be started through NFT Hanler Contract"; code: notNFTHandlerContract };
+      throw e
+  
+ end 
+end
+
+transition placeBid(auctionId:Uint32, spwAmount:Uint128)
+
+blk <- & BLOCKNUMBER;
+ auctionTime <- auctionsMap[auctionId];
+ match auctionTime with 
+  |Some auction =>
+     match auction with
+       |Auction i ta ti sp d st owner highestBid highestBidder state =>
+          endtime = builtin badd st d;
+           early = builtin blt blk st;
+           match early with
+             |True =>
+               e = { _exception : "Auction has not Started"; code: auction_not_started };
+      throw e
+             |False =>
+                isLate = builtin blt blk endtime;
+                match isLate with
+                  |False =>
+                       e = { _exception : "Too Late To Bid."; code: too_late_to_bid };
+      throw e
+                  |True =>
+                    
+                    (*Check bidAmount is greater than zero*)
+  greaterThanZero = builtin lt spwAmount zero128;
+  match greaterThanZero with
+    |False =>
+    |True =>
+      e = { _exception : "Bid amount must be greater than zero"; code: bid_is_zero };
+      throw e
+  end;
+
+  auctionOption <- auctionsMap[auctionId];
+
+  match auctionOption with
+    | Some auction =>
+        match auction with
+          |Auction i ta ti sp d stime o hb hber st =>
+            
+            (*check auction state is running*)
+            match st with
+              |Running runningState =>
+              |Finalized finalizedState =>
+                e = { _exception : "Auction has finished"; code: auction_finalized };
+                throw e
+            end;
+            
+            senderOldBid <- auctionBids[i][_sender];
+            match senderOldBid with
+              |Some oldBid =>
+                currentBid = builtin add oldBid spwAmount;
+                (*check current bid is greater than highest price*)
+                greaterThanHighestPrice = builtin lt hb currentBid;
+                match greaterThanHighestPrice with
+                  |True =>
+                    auctionBids[i][_sender] := currentBid;
+                    tempReturns[i][_sender] := currentBid;
+                    hb = currentBid;
+                    hber = _sender;
+                    
+                    newAuction = Auction i ta ti sp d stime o hb hber st;
+                    auctionsMap[i] := newAuction;
+                    
+                   
+                    
+                    msg = {_tag : "TransferFrom"; _recipient: spwAddress; _amount: Uint128 0;
+             from: _sender; to: _this_address; amount: spwAmount};
+      msgs = one_msg msg;
+      send msgs;
+      
+       e = {_eventname: "newBid"; id:i; bidder:_sender; amount:currentBid; code:accepted_code};
+                    event e
+      
+                  |False =>
+                    e = { _exception : "Bid amount is less than the highest bid"; code: bid_not_highest };
+                    throw e
+                end
+              |None =>
+                currentBid = spwAmount;
+                (*check current bid is greater than highest price*)
+                greaterThanHighestPrice = builtin lt hb currentBid;
+                match greaterThanHighestPrice with
+                  |True =>
+                    auctionBids[i][_sender] := currentBid;
+                    tempReturns[i][_sender] := currentBid;
+                    hb = currentBid;
+                    hber = _sender;
+                    
+                    newAuction = Auction i ta ti sp d stime o hb hber st;
+                    auctionsMap[i] := newAuction;
+                    
+                     msg = {_tag : "TransferFrom"; _recipient: spwAddress; _amount: Uint128 0;
+             from: _sender; to: _this_address; amount: spwAmount};
+      msgs = one_msg msg;
+      send msgs;
+                    
+                    e = {_eventname: "newBid"; id:i; bidder:_sender; amount:currentBid; code:accepted_code};
+                    event e
+                    
+                    
+                   
+                  |False =>
+                    e = { _exception : "Bid amount is less than the highest bid"; code: bid_not_highest };
+                    throw e
+                end
+            end
+            
+        end
+    | None =>
+  end
+                    
+      
+    end
+  end
+end
+ |None =>
+   e = { _exception : "Auction with specified id does not exist"; code: auction_not_found };
+      throw e
+  
+   end
+ end
+
+
+transition finalizeAuction(auctionId:Uint32)
+   blk <- & BLOCKNUMBER;
+
+  auctionOption <- auctionsMap[auctionId];
+  
+  match auctionOption with
+    | Some auction =>
+        match auction with
+          |Auction i ta ti sp d st owner highestBid highestBidder state =>
+            
+          endtime = builtin badd st d;
+           early = builtin blt blk st;
+           
+            match early with
+             |True =>
+               e = { _exception : "Auction has not Started"; code: auction_not_started };
+      throw e
+             |False =>
+                is_auction_ended = builtin blt blk endtime;
+                match is_auction_ended with
+                  |True =>
+                       e = { _exception : "Auction is still running"; code: auction_still_running };
+      throw e
+                  |False =>
+          
+
+            (*only owner can finalize auction*)
+            is_owner = builtin eq owner _sender;
+            match is_owner with
+              |False =>
+                e = { _exception : "Only the auction owner can finalize it"; code: not_owner_of_auction };
+                throw e
+              |True =>
+                
+                
+                current_auction_fee <- auction_fee;
+                
+                 fees = builtin div highestBid current_auction_fee;
+                 
+                sellers_amount = builtin sub highestBid fees;
+                
+                 msg1 = {_tag : "Transfer"; _recipient: spwAddress; _amount: Uint128 0;
+                   to: owner; amount: sellers_amount};
+                   
+                     msg2 = {_tag : "Transfer"; _recipient: spwAddress; _amount: Uint128 0;
+                   to: wallet; amount: fees};
+                   
+      msgs = two_msgs msg1 msg2;
+      send msgs;
+                
+                
+                (* highest bidder gets no money *)
+    
+                tempReturns[auctionId][highestBidder] := zero128;
+                
+                (* everyone else gets their money returned *)
+                (*returnLosersMoney auctionId;*)
+                
+                state = Finalized finalizedState;
+                newAuction = Auction i ta ti sp d st owner highestBid highestBidder state;
+                auctionsMap[i] := newAuction;
+                
+                (*transfer nft to highestBidder*)
+                msg = { _tag : "TransferNFT"; _recipient : nftHold; _amount : Uint128 0; contract_address: ta; token_id : ti; to:highestBidder};
+                msgs = one_msg msg;
+                send msgs;
+                
+                e = {_eventname: "auctionFinalized"; id:auctionId; code:accepted_code};
+                event e
+              end
+            end
+          end
+        end
+    | None =>
+      e = { _exception : "Auction with specified id does not exist"; code: auction_not_found };
+      throw e
+  end
+end
+
+transition claimback(auctionId:Uint32)
+
+  (*check that auction is finalized*)
+  auctionOption <- auctionsMap[auctionId];
+  match auctionOption with
+    | Some auction =>
+        match auction with
+          |Auction i ta ti sp d st owner highestBid highestBidder state =>
+            
+            match state with
+              |Finalized finalizedState =>
+              |Running runningState =>
+                e = { _exception : "Claimback can only be performed after auction finishes"; code: auction_not_finalized };
+                throw e
+            end
+        end
+  | None =>
+      e = { _exception : "Auction with specified id does not exist"; code: auction_not_found };
+      throw e
+  end;
+ 
+  returns <- tempReturns[auctionId][_sender];
+    
+  match returns with
+    |Some amount =>
+      
+      msg  = {_tag : "Transfer"; _recipient : spwAddress; _amount: Uint128 0; 
+      to: _sender; amount: amount};
+    msgs = one_msg msg;
+    send msgs;
+    
+     tempReturns[auctionId][_sender] := zero128;
+    
+      e = {_eventname: "claimback"; id:auctionId; sender:_sender; amount:amount; code:accepted_code};
+      event e
+    |None =>
+      e = { _exception : "No bid found for this sender in this auction"; code: no_bid_found };
+      throw e
+  end
+end
+
+transition TransferFromSuccessCallBack(
+  initiator : ByStr20,
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+end
+
+transition TransferSuccessCallBack(
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+end
+
+
+
+(*Accept Tokens*) 
+transition RecipientAcceptTransferFrom (initiator: ByStr20 ,sender : ByStr20, recipient : ByStr20, amount : Uint128) 
+ isTokenContract = builtin eq spwAddress _sender;
+   match isTokenContract with
+     |True =>
+     |False => 
+      err = { _exception : "CodeWrongToken"; code : codeWrongToken };
+      throw err
+ 
+    end 
+end 
+
+
+transition cancelAuction (auctionId:Uint32)
+
+noBidder = 0x0000000000000000000000000000000000000000;
+
+ selectedAuction <- auctionsMap[auctionId];
+  match selectedAuction with
+    |Some auction_owner =>
+       match auction_owner with
+          |Auction i ta ti sp d st owner highestBid highestBidder state =>
+            
+            check_for_bids = builtin eq highestBidder noBidder;
+            
+            match check_for_bids with 
+              |False=> 
+                err = { _exception : "Can not cancel auction with bids"; code : auction_has_bids };
+                  throw err
+              |True =>
+                
+            
+            is_owner = builtin eq owner _sender;
+            match is_owner with 
+              |True=>
+                
+                msg = { _tag : "TransferNFT"; _recipient : nftHold; _amount : Uint128 0; contract_address: ta; token_id : ti; to:owner};
+                msgs = one_msg msg;
+                send msgs;
+                
+                
+                delete auctionsMap[auctionId]
+                
+              |False =>
+                    err = { _exception : "Not the owner of auction"; code : not_owner_of_auction };
+      throw err
+                
+            end
+          end
+        end  
+            
+    
+    |None =>
+      err = { _exception : "auction id not found"; code : auction_not_found };
+      throw err
+      
+
+  end
+end
+
+transition change_auction_fee(new_auction_fee: Uint128 )
+
+IsContractOwner;
+auction_fee := new_auction_fee;
+
+  e = { _exception : "Auction fee has been changed."; code: owner_changed_fee };
+      throw e
+
+end
+
+transition admin_finalizeAuction(auctionId:Uint32)
+   blk <- & BLOCKNUMBER;
+
+  auctionOption <- auctionsMap[auctionId];
+  
+  match auctionOption with
+    | Some auction =>
+        match auction with
+          |Auction i ta ti sp d st owner highestBid highestBidder state =>
+            
+          endtime = builtin badd st d;
+           early = builtin blt blk st;
+           
+            match early with
+             |True =>
+               e = { _exception : "Auction has not Started"; code: auction_not_started };
+      throw e
+             |False =>
+                is_auction_ended = builtin blt blk endtime;
+                match is_auction_ended with
+                  |True =>
+                       e = { _exception : "Auction is still running"; code: auction_still_running };
+      throw e
+                  |False =>
+          
+
+            (*only owner can finalize auction*)
+            is_owner = builtin eq contract_owner _sender;
+            match is_owner with
+              |False =>
+                e = { _exception : "Only the auction contract_owner can call this transition"; code: not_contract_owner };
+                throw e
+              |True =>
+                
+                   (*If admin has to finalize, auction owner forfeits earnings, this will be based off reports and time between auction ending*)
+                     msg = {_tag : "Transfer"; _recipient: spwAddress; _amount: Uint128 0;
+                   to: wallet; amount: highestBid};
+                   
+       msgs = one_msg msg;
+                send msgs;
+                
+                
+                (* highest bidder gets no money *)
+    
+                tempReturns[auctionId][highestBidder] := zero128;
+                
+                (* everyone else gets their money returned *)
+                (*returnLosersMoney auctionId;*)
+                
+                state = Finalized finalizedState;
+                newAuction = Auction i ta ti sp d st owner highestBid highestBidder state;
+                auctionsMap[i] := newAuction;
+                
+                (*transfer nft to highestBidder*)
+                msg = { _tag : "TransferNFT"; _recipient : nftHold; _amount : Uint128 0; contract_address: ta; token_id : ti; to:highestBidder};
+                msgs = one_msg msg;
+                send msgs;
+                
+                e = {_eventname: "auctionFinalized"; id:auctionId; code:accepted_code};
+                event e
+              end
+            end
+          end
+        end
+    | None =>
+      e = { _exception : "Auction with specified id does not exist"; code: auction_not_found };
+      throw e
+  end
+end
+
+
+

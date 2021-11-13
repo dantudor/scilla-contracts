@@ -1,0 +1,265 @@
+scilla_version 0
+
+import IntUtils
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+library Waifuery
+
+let one_msg =
+  fun (m : Message) =>
+    let e = Nil {Message} in
+    Cons {Message} m e
+  
+  
+type Error =
+| NonOwnerCannotCall
+| NonRecoveryCannotCall  
+| InsufficientFunds
+| NFTSoldOut
+| CodeContractNotPaused
+| CodeContractPaused
+
+(* Error events *)
+let mk_error_event =
+  fun (err : Error) =>
+  let err_code = 
+    match err with
+    | NonOwnerCannotCall        => Int32 -1
+    | NonRecoveryCannotCall     => Int32 -2
+    | InsufficientFunds         => Int32 -3
+    | NFTSoldOut                => Int32 -4
+    | CodeContractNotPaused     => Int32 -5
+    | CodeContractPaused        => Int32 -6
+    end in
+    { _exception : "Error"; code : err_code }
+
+let false = False
+let true = True
+let zero = Uint128 0
+let one = Uint128 1
+let big_zero = Uint256 0
+let big_one = Uint256 1
+let price_increase = Uint128 500000000000000 (*500 zil in qa*)
+let increase_interval = Uint256 128
+(***************************************************)
+(*             The contract definition             *)
+(*                                                 *)
+(* This contract enables an NFT lot to be sold     *)
+(* to individual investors in a decentralized and  *)
+(* fair manner.                                    *)
+(*                                                 *)
+(* WARNING: If the owner loses their private key   *)
+(* they will be unable to interact with the smart  *)
+(* contract, for this reason a recovery wallet may *)
+(* be desirable to set in order to prevent losses. *)
+(*                                                 *)
+(***************************************************)
+contract Waifuery
+(
+owner           : ByStr20,
+nft_address     : ByStr20,
+token_stop      : Uint256 (*this token ID will not be sold so set to 1 above the collection*)
+)
+
+(*               Field Definitions              *)
+field wallet_owner  : ByStr20 = owner
+field paused        : Bool = false
+field pending_owner : Option ByStr20 = None {ByStr20}
+field token_next    : Uint256 = big_one
+field current_price : Uint128 = price_increase
+
+(*                Begin Procedures              *)
+
+procedure ThrowError (err : Error)
+  e = mk_error_event err;
+  throw e
+end
+
+procedure IsOwner()
+  wallet <- wallet_owner;
+  is_wallet_owner = builtin eq wallet _sender;
+  match is_wallet_owner with
+  | True => 
+  | False =>
+    err = NonOwnerCannotCall;
+    ThrowError err
+  end
+end
+
+procedure IsPaused()
+  pause_status <- paused;
+  match pause_status with
+  | False => 
+    err = CodeContractNotPaused;
+    ThrowError err
+  | True =>
+  end
+end
+procedure IsNotPaused()
+  pause_status <- paused;
+  match pause_status with
+  | True => 
+    err = CodeContractPaused;
+    ThrowError err
+  | False =>
+  end
+end
+
+procedure update_price(price: Uint128)
+    current_price := price
+end
+
+procedure  NotSoldOut()
+  next <- token_next;
+  none_left = builtin lt token_stop next;
+  match none_left with
+    |True => 
+    err = NFTSoldOut; 
+    ThrowError err
+    |False =>
+    end
+end
+procedure TryIncrementPrice()
+    next_token <- token_next;
+    remainder = builtin rem next_token increase_interval;
+    increase_for_next = builtin eq remainder big_zero;
+    match increase_for_next with
+    | True=>
+        old_price <- current_price;
+        new_price = builtin add old_price price_increase;
+        current_price := new_price
+    | False =>
+    end
+end
+
+procedure IsNotSoldOut()
+    next_token <- token_next;
+    any_left = builtin lt next_token token_stop;
+    match any_left with
+    | True =>
+    | False =>
+        err = NFTSoldOut;
+        ThrowError err
+    end
+end
+
+
+(*                    Begin Transitions                       *)
+
+transition Pause()
+  IsNotPaused;
+  IsOwner;
+  pause_status <- paused;
+  match pause_status with 
+  | True =>
+    err = CodeContractPaused;
+    ThrowError err
+  | False =>
+    paused := true;
+    e = { _eventname : "Contract Paused" };
+    event e
+    end
+end
+
+transition Resume()
+  IsPaused;
+  IsOwner;
+  pause_status <- paused;
+  match pause_status with 
+  | False =>
+    err = CodeContractPaused;
+    ThrowError err
+  | True =>
+    paused := false;
+    e = { _eventname : "Contract Unpaused" };
+    event e
+    end
+end
+
+
+
+(*      SAFE OWNERSHIP TRANSFER TRANSITIONS   *)
+
+transition RequestOwnershipTransfer(new_owner: ByStr20)
+  IsOwner;
+  po = Some {ByStr20} new_owner;
+  pending_owner := po
+end
+
+transition ConfirmOwnershipTransfer()
+  IsOwner;
+  optional_po <- pending_owner;
+  match optional_po with
+  | Some pend_owner =>
+      caller_is_new_owner = builtin eq _sender pend_owner;
+      match caller_is_new_owner with
+      | True =>
+          (* transfer ownership *)
+          wallet_owner := pend_owner;
+          none = None {ByStr20};
+          pending_owner := none
+      | False => (* the caller is not the new owner, do nothing *)
+      end
+  | None => (* ownership transfer is not in-progress, do nothing *)
+  end
+end
+
+  
+(*       Vending Logic          *)
+transition Buy()
+  IsNotPaused;
+  IsNotSoldOut;
+  (*read the current price then prepare to increment it*)
+  price_now <- current_price;
+  TryIncrementPrice;
+  insufficient_paid = builtin lt _amount price_now;
+  match insufficient_paid with
+    |True =>
+        err = InsufficientFunds;
+        ThrowError err
+    |False =>
+        token_id <- token_next;
+        new_next = builtin add token_id big_one;
+        token_next := new_next;
+        accept;
+        msg_to_contract = {_tag : "Transfer"; _recipient : nft_address; _amount : zero; to: _sender; token_id: token_id};
+        msg = one_msg msg_to_contract;
+      send msg
+  end
+end
+
+transition WithdrawalFunds(amount:Uint128, recipient: ByStr20)
+IsOwner;
+IsNotPaused;
+msg_to_recipient = {_tag: "AcceptFunds"; _recipient: recipient ; _amount: amount};
+msgs = one_msg msg_to_recipient;
+send msgs
+end
+
+(*NOTE: new price will be set in Qa so convert ZIL*)
+transition UpdatePrice(date: Uint32, new_price: Uint128)
+IsNotPaused;
+IsOwner;
+update_price new_price
+end
+
+transition TransferToken(token_id:Uint256, recipient:ByStr20)
+  IsOwner;
+  msg_to_token = {_tag: "Transfer"; _recipient: nft_address ; _amount: zero; to:recipient; token_id:token_id};
+  msgs = one_msg msg_to_token;
+  send msgs
+end
+
+
+(* msg_to_sender = { _tag : "TransferSuccessCallBack"; _recipient : _sender; _amount : Uint128 0; 
+                    from : _sender; recipient : to; token_id : token_id };*)
+transition  TransferSuccessCallBack(from: ByStr20, recipient: ByStr20, token_id: Uint256)
+    increment_cost= builtin lt token_id token_stop
+end
+
+(*  { _tag : "RecipientAcceptMint"; _recipient : to; _amount : Uint128 0 };*)
+transition  RecipientAcceptMint()
+  IsNotPaused
+end

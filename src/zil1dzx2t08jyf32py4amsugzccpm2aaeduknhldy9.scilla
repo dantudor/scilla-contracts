@@ -1,0 +1,84 @@
+
+(* sourceCodeHash=0x609607665580c8c68a63dcad97c2da0d6723e6e0ad95f535e68bdbeded6a342b *)
+(* sourceCodeHashKey=hash_0x609607665580c8c68a63dcad97c2da0d6723e6e0ad95f535e68bdbeded6a342b *)
+scilla_version 0
+
+import ListUtils
+
+library MultiPay
+type Error =
+| InvalidAmt
+
+let make_error =
+fun (result: Error) =>
+let result_code =
+match result with
+| InvalidAmt => Int32 -1
+end
+in
+{ _exception: "Error"; code: result_code }
+
+let zero = Uint128 0
+
+type Pay =
+| Pay of ByStr20 Uint128
+
+let one_msg = 
+    fun(msg: Message) =>
+    let nil_msg = Nil{Message} in Cons{Message} msg nil_msg
+
+let bystr20_list_length: List ByStr20 -> Uint128 = 
+    fun(l: List ByStr20) =>
+    let f = @list_length ByStr20 in
+    let len = f l in
+    let maybe_128 = builtin to_uint128 len in
+    match maybe_128 with
+    | None => zero
+    | Some u128 => u128
+    end
+
+let sum_pay: List Pay -> Uint128 = fun(l: List Pay) =>
+    let folder = fun(acc: Uint128) => fun(p: Pay) => let to_add = match p with | Pay n amt => amt end in builtin add acc to_add in
+    let fold = @list_foldl Pay Uint128 in
+    fold folder zero l
+
+contract MultiPay()
+
+procedure ThrowError(err: Error)
+    e = make_error err;
+    throw e
+end
+
+procedure PayZIL(p: Pay)
+    match p with
+    | Pay beneficiary amt =>
+        msg = let m = {
+            _tag: "AddFunds";
+            _recipient: beneficiary;
+            _amount: amt
+        } in one_msg m;
+        send msg;
+        e = {_eventname : "Sent ZIL"; beneficiary: beneficiary; amt: amt};
+        event e
+    end
+end
+
+procedure AssertReceivedCorrectAmt(targets: List Pay)
+    sum = sum_pay targets;
+    valid = builtin eq sum _amount;
+    match valid with
+    | False => e = InvalidAmt; ThrowError e
+    | True =>
+    end
+end
+
+
+transition MultiZIL(targets: List Pay)
+    
+    accept;
+    
+    AssertReceivedCorrectAmt targets;
+    
+    
+    forall targets PayZIL
+end

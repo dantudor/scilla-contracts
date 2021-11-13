@@ -1,0 +1,23 @@
+scilla_version 0
+
+contract Test(owner: ByStr20)
+
+field uris: Map Uint128 String = Emp Uint128 String
+field count: Uint128 = Uint128 0
+
+transition addUri(uri: String)
+  countTmp <- count;
+  one128 = Uint128 1;
+  uris[countTmp] := uri;
+  countPlusOne = builtin add countTmp one128;
+  count:=countPlusOne
+end
+  
+
+(*let nil = Nil {Int32} in*)
+(**)
+(*let one = Int32 1 in*)
+(**)
+(*let nil = Nil {String} in*)
+(*let l1 = Cons {Int32} one nil in*)
+

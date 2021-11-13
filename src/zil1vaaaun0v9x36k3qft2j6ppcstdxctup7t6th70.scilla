@@ -1,0 +1,221 @@
+scilla_version 0
+
+library GhostUnicutesProxyLibrary
+
+let zero = Uint128 0
+let one = Uint128 1
+let uint32_one = Uint32 1
+let uint256_zero = Uint256 0
+let false = False
+let true = True
+
+(* returns singleton List Message *)
+let one_msg =
+    fun (msg : Message) =>
+        let nil_msg = Nil {Message} in
+        Cons {Message} msg nil_msg
+
+(* User-defined ADTs *)
+type Dummy =
+| Dummy
+
+let verdad = Dummy
+
+(* Error codes *)
+type Error =
+| CodeWrongAmount
+| CodeDeactivated
+| CodeProxyClosed
+| CodeNotOwner
+| CodeNoGhostUnicutesLeft
+| CodeIsNotPending
+| CodeDuplicatedIpfsHash
+let make_error =
+  fun (result: Error) =>
+    let result_code = 
+      match result with
+      | CodeWrongAmount                => Int32 -1
+      | CodeDeactivated                => Int32 -2
+      | CodeProxyClosed                => Int32 -3
+      | CodeNotOwner                   => Int32 -4
+      | CodeNoGhostUnicutesLeft        => Int32 -5
+      | CodeIsNotPending               => Int32 -6
+      | CodeDuplicatedIpfsHash         => Int32 -7
+      end
+    in
+    { _exception : "Error"; code : result_code }
+
+contract GhostUnicutesProxy
+(
+  contract_owner: ByStr20,
+  max_ghost_unicutes: Uint32,
+  unicutes_smart_contract: ByStr20,
+  ghost_unicutes_smart_contract: ByStr20,
+  name : String,
+  symbol: String
+)
+
+field is_proxy_open   : Bool = True
+field burned_unicutes : Uint32 = Uint32 0
+
+field pending_ghost_unicutes : Map Uint256 ByStr20 = Emp Uint256 ByStr20
+field minted_ghost_unicutes  : Map Uint256 ByStr20 = Emp Uint256 ByStr20
+field minted_ipfs_hashes  : Map String Dummy = Emp String Dummy
+
+procedure ThrowError(err: Error)
+  e = make_error err;
+  throw e
+end
+
+
+(* ================ *)
+(* Admin Procedures *)
+(* ================ *)
+
+procedure IsProxyOpen()
+  is_open <- is_proxy_open;
+  match is_open with
+  | True =>
+  | False =>
+    err = CodeProxyClosed;
+    ThrowError err
+  end
+end
+
+procedure IsOwner()
+  is_owner = builtin eq contract_owner _sender;
+  match is_owner with
+  | True =>
+  | False =>
+    err = CodeNotOwner;
+    ThrowError err
+  end
+end
+
+(* ==================== *)
+(* Anonymous Procedures *)
+(* ==================== *)
+
+procedure ThrowIfIpfsHashIsMinted(ipfs_hash: String)
+  option_ipfs_hash <- minted_ipfs_hashes[ipfs_hash];
+  match option_ipfs_hash with
+  | Some _ =>
+    err = CodeDuplicatedIpfsHash;
+    ThrowError err
+  | None =>
+  end
+end
+
+procedure AnyGhostUnicutesLeft()
+  burned <- burned_unicutes;
+  is_equal = builtin eq burned max_ghost_unicutes;
+  match is_equal with
+  | False =>
+    new_burned_number = builtin add burned uint32_one;
+    burned_unicutes := new_burned_number
+  | True =>
+    err = CodeNoGhostUnicutesLeft;
+    ThrowError err
+  end
+end
+
+transition CloseProxy()
+   IsOwner;
+   val = False;
+   is_proxy_open := val;
+   e = {
+    _eventname: "CloseProxy";
+    amount : _amount
+  };
+  event e
+end
+
+(* user must have approved us as senders *)
+transition BurnUnicute(token_id: Uint256)
+  IsProxyOpen;
+
+  (* is unicute owner *)
+  msg_to_unicutes_is_owner = {
+    _tag  : "Unicute";
+    _amount: zero;
+    _recipient : unicutes_smart_contract;
+    owner: _sender;
+    token_id: token_id
+  };
+  is_owner = one_msg msg_to_unicutes_is_owner;
+  send is_owner;
+  
+  AnyGhostUnicutesLeft;
+  accept;
+  (* burn address zil1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqpcja0us*)
+  (* transfer unicute to blackhole *)
+  msg_to_unicute_sc = {
+    _tag : "TransferFrom";
+    _recipient: unicutes_smart_contract;
+    _amount: zero;
+    to: "zil1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqpcja0us";
+    token_id: token_id
+  };
+  msgs_to_unicute_sc = one_msg msg_to_unicute_sc;
+  send msgs_to_unicute_sc;
+
+  pending_ghost_unicutes[token_id] := _sender;
+  e = {_eventname: "BurnUnicuteSuccess"; initiator: _sender; burn_address: _sender; token_id: token_id};
+  event e
+end
+
+transition Mint(token_id: Uint256, token_uri: String)
+  IsOwner;
+  ThrowIfIpfsHashIsMinted token_uri;
+  option_token_owner <- pending_ghost_unicutes[token_id];
+  match option_token_owner with
+  | None =>
+    err = CodeIsNotPending;
+    ThrowError err
+  | Some token_owner =>
+    msg_to_ghost_unicutes = {
+      _tag          : "Mint";
+      _recipient    : ghost_unicutes_smart_contract;
+      _amount       : zero;
+      to            : token_owner;
+      token_uri      : token_uri
+    };
+    msg = one_msg msg_to_ghost_unicutes;
+    send msg;
+    minted_ghost_unicutes[token_id] := token_owner;
+    delete pending_ghost_unicutes[token_id];
+    minted_ipfs_hashes[token_uri] := verdad;
+    e = {_eventname: "MintSuccess"; initiator: _sender; burn_address: token_owner; token_id: token_id; token_uri: token_uri};
+    event e
+  end
+end
+
+transition MintCallBack(recipient : ByStr20, token_id : Uint256, token_uri : String)
+  e = {_eventname: "MintCallBack"; recipient: recipient; token_id: token_id; token_uri: token_uri};
+  event e
+end
+
+transition BurnCallBack(initiator : ByStr20, burn_address : ByStr20, token_id : ByStr20)
+  e = {_eventname: "BurnCallBack"; initiator: initiator; burn_address: burn_address; token_id: token_id};
+  event e
+end
+
+transition Withdraw(amount: Uint128)
+  IsOwner;
+  msg  = {_tag : ""; _recipient : _sender; _amount : amount};
+  msgs = one_msg msg;
+  send msgs
+end
+
+(* hack... *)
+transition DrandRoundCallBack(drand_round: Uint256, drand_values: (Option String), legendary: (Option Bool))
+  e = {_eventname: "IsOwner"; initiator: _sender};
+  event e
+end
+
+(* from:       token_owner *)
+(* recipient:  to *)
+transition TransferFromSuccessCallBack(from: ByStr20, recipient: ByStr20, token_id: Uint256)
+  e = {_eventname: "TransferFromSuccessCallBack"; initiator: _sender; from: from; recipient: recipient; token_id: token_id};
+  event e
+end

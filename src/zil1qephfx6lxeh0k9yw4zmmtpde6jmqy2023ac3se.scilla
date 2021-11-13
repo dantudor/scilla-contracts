@@ -1,0 +1,43 @@
+(* SaveData contract *)
+
+(***************************************************)
+(*                 Scilla version                  *)
+(***************************************************)
+
+scilla_version 0
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+
+library SaveData
+
+
+let not_owner_code  = Uint32 1
+let set_code  = Uint32 2
+
+(***************************************************)
+(*             The contract definition             *)
+(***************************************************)
+
+contract SaveData
+(owner: ByStr20)
+
+field msg_campaign : String = "campaign sended successful"
+field msg_bot : String = "Message sended successful"
+
+
+transition sendCampaign (hash : String, url : String, message_id: String)
+  r <- msg_campaign;
+  e = {_eventname: "getCampaign"; msg: r};
+  event e
+end
+
+transition sendBotMsg (operator : String, bot : String, session: String, data: String)
+  r <- msg_bot;
+  e = {_eventname: "getBotMsg"; msg: r};
+  event e
+end
+
+
+

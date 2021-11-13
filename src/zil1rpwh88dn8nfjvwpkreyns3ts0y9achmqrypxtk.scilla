@@ -1,0 +1,1045 @@
+
+scilla_version 0
+
+
+
+
+
+import BoolUtils ListUtils
+
+library IgniteWallet
+
+type Error =
+| NotAuthorized
+| SenderIsNotSSNList
+| InvalidSRSetup
+| SRNotSetup
+| InvalidSR
+| WalletLocked
+| InvalidCheque
+| PubkeysAreNotUnique
+| WrongRecoveryListLength
+| RecoveryMsgPreconditionNotMet
+| InvalidSignature
+| OtherHasNoAdmin
+| GasFeeAnomaly
+
+let make_error =
+fun (result: Error) =>
+let result_code =
+match result with
+| NotAuthorized => Int32 -1
+| SenderIsNotSSNList => Int32 -2
+| InvalidSRSetup => Int32 -3
+| SRNotSetup => Int32 -4
+| InvalidSR => Int32 -5
+| WalletLocked => Int32 -6
+| InvalidCheque => Int32 -7
+| PubkeysAreNotUnique => Int32 -8
+| WrongRecoveryListLength => Int32 -9
+| RecoveryMsgPreconditionNotMet => Int32 -10
+| InvalidSignature => Int32 -11
+| OtherHasNoAdmin => Int32 -12
+| GasFeeAnomaly => Int32 -13
+end
+in
+{ _exception: "Error"; code: result_code }
+
+let one_msg = fun( msg: Message ) =>
+let nil_msg = Nil{ Message } in Cons{ Message } msg nil_msg
+
+let zero = Uint128 0
+let one = Uint128 1
+let zil_100 = Uint128 100000000000000
+let uint32_zero = Uint32 0
+let zeroByStr0 = 0x
+let zeroByStr = builtin to_bystr zeroByStr0
+let zeroByStr20 = 0x0000000000000000000000000000000000000000
+let zeroByStr33 = 0x000000000000000000000000000000000000000000000000000000000000000000
+
+let option_value = tfun 'A => fun( default: 'A ) => fun( input: Option 'A) =>
+  match input with
+  | Some v => v
+  | None => default end
+let option_uint128_value = let f = @option_value Uint128 in f zero
+let option_bystr20_value = let f = @option_value ByStr20 in f zeroByStr20
+let option_bystr33_value = let f = @option_value ByStr33 in f zeroByStr33
+
+
+let commission_denominator = Uint128 10000
+
+type Uint128Pair =
+| Uint128Pair of Uint128 Uint128
+let uint128_to_uint256 : Uint128 -> Uint256 =
+  fun (x : Uint128) =>
+    let ox256 = builtin to_uint256 x in
+      match ox256 with
+      | None =>
+        
+        let zero = Uint256 0 in
+        builtin div zero zero
+      | Some x256 => x256
+      end
+
+let muldiv: Uint128 -> Uint128 -> Uint128 -> Uint128 =
+    fun (x : Uint128) =>
+    fun (y : Uint128) =>
+    fun (z : Uint128) =>
+      let x256 = uint128_to_uint256 x in
+      let y256 = uint128_to_uint256 y in
+      let z256 = uint128_to_uint256 z in
+      let x_mul_y256 = builtin mul x256 y256 in
+      let res256 = builtin div x_mul_y256 z256 in
+      let ores128 = builtin to_uint128 res256 in
+      match ores128 with
+      | None =>
+        
+        let max_uint128 = Uint128 340282366920938463463374607431768211455 in
+        let fourtytwo128 = Uint128 42 in
+        builtin mul max_uint128 fourtytwo128
+      | Some res128 =>
+        res128
+      end
+
+let sub_percentage_of_amt: Uint128 -> Uint128 -> Uint128Pair =
+    fun (amount: Uint128) => fun (commission_numerator: Uint128) =>
+    let commission = muldiv amount commission_numerator commission_denominator in
+    let amount_sub_commission = builtin sub amount commission in
+    let res = Uint128Pair amount_sub_commission commission in
+    res
+
+type Quadruplet =
+| Quadruplet of Uint128 Uint128 Uint128 Uint128
+
+let zilswap_params_sub_commission_with_discount: Uint128 -> Uint128 -> Uint128 -> Uint128 -> Quadruplet =
+    fun (total1: Uint128) => fun (total2: Uint128) => fun (comm: Uint128) => fun (reputation_discount: Uint128) =>
+    let res0 = sub_percentage_of_amt comm reputation_discount in
+    match res0 with
+    | Uint128Pair smaller_comm discount =>
+        let res1 = sub_percentage_of_amt total1 smaller_comm in
+        let res2 = sub_percentage_of_amt total2 smaller_comm in
+        match res1 with
+        | Uint128Pair amt1 comm1 =>
+            match res2 with
+            | Uint128Pair amt2 comm2 => Quadruplet amt1 comm1 amt2 comm2
+            end
+        end
+    end
+
+let add_funds = "AddFunds"
+let false = False
+let true = True
+
+
+type SocialRecoverySet =
+| NotSetup
+| Setup of (List ByStr33) Uint32
+
+
+type RecovererSignedMsg =
+| RecovererSignedMsg of ByStr33 BNum ByStr64
+
+let bystr33_list_len: List ByStr33 -> Uint32 = 
+    fun (l : List ByStr33) =>
+        let len = @list_length ByStr33 in len l
+let recoverer_msg_list_len: List RecovererSignedMsg -> Uint32 = 
+    fun (l : List RecovererSignedMsg) =>
+        let len = @list_length RecovererSignedMsg in
+        len l
+let bystr33_has_elem: List ByStr33 -> ByStr33 -> Bool = 
+    fun (l : List ByStr33) => fun (e : ByStr33) =>
+        let bystr33_eq = fun(e1: ByStr33) => fun(e2: ByStr33) => builtin eq e1 e2 in
+        let curried = bystr33_eq e in
+        let has = @list_exists ByStr33 in
+        has curried l
+let pubkeys_are_unique: List ByStr33 -> Bool =
+    fun(msgs: List ByStr33) =>
+    let initial_len = bystr33_list_len msgs in
+    let init_map: Map ByStr33 Bool = Emp ByStr33 Bool in
+    let put_in_map: Map ByStr33 Bool -> ByStr33 -> Option Map ByStr33 Bool =
+        fun(acc: Map ByStr33 Bool) => fun(pubkey: ByStr33) =>
+            let tmp_acc = builtin put acc pubkey true in Some {Map ByStr33 Bool} tmp_acc in
+    let fold = @list_foldl_while ByStr33 Map ByStr33 Bool in
+    let pubkey_set = fold put_in_map init_map msgs in
+    let pubkey_set_list = builtin to_list pubkey_set in
+    let len = @list_length (Pair ByStr33 Bool) in
+    let pubkey_set_list_len = len pubkey_set_list in
+    builtin eq pubkey_set_list_len initial_len
+let recoverer_msg_list_has_unique_pubkeys: List RecovererSignedMsg -> Bool =
+    fun(msgs: List RecovererSignedMsg) =>
+    let mapper = fun(msg: RecovererSignedMsg) => match msg with | RecovererSignedMsg pubkey valid sig => pubkey end in
+    let map = @list_map RecovererSignedMsg ByStr33 in
+    let mapped = map mapper msgs in
+    pubkeys_are_unique mapped
+
+let ssn_proxy = "ssn_proxy_v1"
+let fee_collector = "fee_collector_v1"
+let zilswap = "zilswap_v1"
+let ignite_service_account = "ignite_service_account_v1"
+let ignite_service_account_pubkey = "ignite_service_account_pubkey_v1"
+let ignite_ssn = "ignite_ssn_v1"
+let ssnlist_implementation = "ssnlist_v1"
+let cookie_jar = "cookie_jar_v1"
+
+let add_funds = "AddFunds"
+
+let hash_list = tfun 'A =>
+    fun(l: List 'A) =>
+    let folder = fun(acc: ByStr) => fun(to_add: 'A) =>
+        let hash = builtin sha256hash to_add in
+        let hash_bystr = builtin to_bystr hash in
+        builtin concat acc hash_bystr in
+    let fold = @list_foldl 'A ByStr in
+    fold folder zeroByStr l
+
+let hash_bystr33_list = @hash_list ByStr33
+let hash_bystr20_list = @hash_list ByStr20
+
+type SignableArgs =
+| SB of String ByStr20
+| SBB of String ByStr20 ByStr20
+| SBUB of String ByStr20 Uint128 ByStr20
+| SBBUB of String ByStr20 ByStr20 Uint128 ByStr20
+| SBUUNUB of String ByStr20 Uint128 Uint128 BNum Uint128 ByStr20
+| SBUBUNUB of String ByStr20 Uint128 ByStr20 Uint128 BNum Uint128 ByStr20
+| SLB33U32B of String (List ByStr33) Uint32 ByStr20
+| SLBLBB of String (List ByStr20) (List ByStr20) ByStr20
+
+let signable_to_cheque_hash: SignableArgs -> ByStr =
+    fun(args: SignableArgs) =>
+        match args with
+            | SB s b => 
+                let sh = builtin sha256hash s in
+                let bh = builtin sha256hash b in
+                let c0 = builtin concat sh bh in
+                builtin to_bystr c0
+            | SBB s b0 b1 => 
+                let sh = builtin sha256hash s in
+                let b0h = builtin sha256hash b0 in
+                let b1h = builtin sha256hash b1 in
+                let c0 = builtin concat sh b0h in
+                let c1 = builtin concat c0 b1h in
+                builtin to_bystr c1
+            | SBUB s b0 u b1 =>
+                let sh = builtin sha256hash s in
+                let b0h = builtin sha256hash b0 in
+                let uh = builtin sha256hash u in
+                let b1h = builtin sha256hash b1 in
+                let c0 = builtin concat sh b0h in
+                let c1 = builtin concat c0 uh in
+                let c2 = builtin concat c1 b1h in
+                builtin to_bystr c2
+            | SBBUB s b0 b1 u b2 => 
+                let sh = builtin sha256hash s in
+                let b0h = builtin sha256hash b0 in
+                let b1h = builtin sha256hash b1 in
+                let uh = builtin sha256hash u in
+                let b2h = builtin sha256hash b2 in
+                let c0 = builtin concat sh b0h in
+                let c1 = builtin concat c0 b1h in
+                let c2 = builtin concat c1 uh in
+                let c3 = builtin concat c2 b2h in
+                builtin to_bystr c3
+            | SBUUNUB s b0 u0 u1 n u2 b1 =>
+                let sh = builtin sha256hash s in
+                let b0h = builtin sha256hash b0 in
+                let u0h = builtin sha256hash u0 in
+                let u1h = builtin sha256hash u1 in
+                let nh = builtin sha256hash n in
+                let u2h = builtin sha256hash u2 in
+                let b1h = builtin sha256hash b1 in
+                let c0 = builtin concat sh b0h in
+                let c1 = builtin concat c0 u0h in
+                let c2 = builtin concat c1 u1h in
+                let c3 = builtin concat c2 nh in
+                let c4 = builtin concat c3 u2h in
+                let c5 = builtin concat c4 b1h in
+                builtin to_bystr c5
+            | SBUBUNUB s b0 u0 b1 u1 n u2 b2 =>
+                let sh = builtin sha256hash s in
+                let b0h = builtin sha256hash b0 in
+                let u0h = builtin sha256hash u0 in
+                let b1h = builtin sha256hash b1 in
+                let u1h = builtin sha256hash u1 in
+                let nh = builtin sha256hash n in
+                let u2h = builtin sha256hash u2 in
+                let b2h = builtin sha256hash b2 in
+                let c0 = builtin concat sh b0h in
+                let c1 = builtin concat c0 u0h in
+                let c2 = builtin concat c1 b1h in
+                let c3 = builtin concat c2 u1h in
+                let c4 = builtin concat c3 nh in
+                let c5 = builtin concat c4 u2h in
+                let c6 = builtin concat c5 b2h in
+                builtin to_bystr c6
+            | SLB33U32B s l u b =>
+                let sh = builtin sha256hash s in
+                let shb = builtin to_bystr sh in
+                let lh = hash_bystr33_list l in
+                let uh = builtin sha256hash u in
+                let uhb = builtin to_bystr uh in
+                let bh = builtin sha256hash b in
+                let bhb = builtin to_bystr bh in
+                let c0 = builtin concat shb lh in
+                let c1 = builtin concat c0 uhb in
+                builtin concat c1 bhb
+            | SLBLBB s l0 l1 b =>
+                let sh = builtin sha256hash s in
+                let shb = builtin to_bystr sh in
+                let l0h = hash_bystr20_list l0 in
+                let l1h = hash_bystr20_list l1 in
+                let bh = builtin sha256hash b in
+                let bhb = builtin to_bystr bh in
+                let c0 = builtin concat shb l0h in
+                let c1 = builtin concat c0 l1h in
+                builtin concat c1 bhb
+            end
+
+
+
+contract IgniteWallet(
+    init_admin_pubkey: ByStr33,
+    init_config: ByStr20 with contract field config_bystr20: Map String ByStr20, field config_uint128: Map String Uint128, field config_bystr33: Map String ByStr33, field reputation: ByStr20 with contract field address_to_discount: Map ByStr20 Uint128 end end
+)
+
+
+
+field bystr20_read: ByStr20 = zeroByStr20
+field bystr33_read: ByStr33 = zeroByStr33
+field uint128_read: Uint128 = zero
+
+
+
+field admin: ByStr20 = builtin schnorr_get_address init_admin_pubkey
+field admin_pubkey: ByStr33 = init_admin_pubkey
+
+
+
+
+field recoverers: SocialRecoverySet = NotSetup
+
+field is_locked: Bool = False
+
+field temp_nominated_admin: ByStr20 = zeroByStr20
+
+
+
+field void_cheques: Map ByStr Bool = Emp ByStr Bool
+
+field temp_discount: Uint128 = zero
+
+field temp_was_service_account: Bool = false
+
+
+field ignite_withdraw_streak: Uint128 = zero
+
+procedure ThrowError(err: Error)
+    e = make_error err;
+    throw e
+end
+
+
+procedure WalletIsNotLocked()
+    is_locked_tmp <- is_locked;
+    match is_locked_tmp with
+    | True => e = WalletLocked; ThrowError e
+    | False => 
+    end
+end
+
+
+
+
+
+procedure ReadByStr20Config(key: String)
+    option_service <-& init_config.config_bystr20[key];
+    service = option_bystr20_value option_service;
+    bystr20_read := service
+end
+
+procedure ReadByStr33Config(key: String)
+    option_service <-& init_config.config_bystr33[key];
+    service = option_bystr33_value option_service;
+    bystr33_read := service
+end
+
+procedure ReadUint128Config(key: String)
+    option_val <-& init_config.config_uint128[key];
+    val = option_uint128_value option_val;
+    uint128_read := val
+end
+procedure AssertIsAdmin(addr: ByStr20)
+    admin_temp <- admin;
+    is_admin = builtin eq admin_temp addr;
+    match is_admin with
+    | True =>
+    | False => e = NotAuthorized; ThrowError e
+    end
+end
+
+procedure IsAdmin()
+    AssertIsAdmin _sender
+end
+
+procedure IsAdminOrServiceAccount()
+    admin_temp <- admin;
+    is_admin = builtin eq admin_temp _sender;
+    ReadByStr20Config ignite_service_account; service <- bystr20_read;
+    is_service_account = builtin eq service _sender;
+    is_admin_or_service = orb is_service_account is_admin;
+    match is_admin_or_service with
+    | True =>
+    | False => e = NotAuthorized; ThrowError e
+    end
+end
+
+
+
+
+procedure AssertChequeValidityAndVoidIt(cheque_hash: ByStr, pubkey: ByStr33, signature: ByStr64)
+    cheque_invalid <- exists void_cheques[cheque_hash];
+    match cheque_invalid with 
+        | False =>
+            valid_sig = builtin schnorr_verify pubkey cheque_hash signature;
+            match valid_sig with
+                | True => 
+                    
+                    
+                    void_cheques[cheque_hash] := true
+                | False => e = InvalidSignature; ThrowError e
+            end
+        | True => e = InvalidCheque; ThrowError e
+    end
+end
+
+procedure UpdateDiscount()
+    rep <-& init_config.reputation;
+    option_discount <-& rep.address_to_discount[_this_address];
+    discount = option_uint128_value option_discount;
+    temp_discount := discount
+end
+
+procedure SendZIL(tag: String, beneficiary: ByStr20, amt: Uint128)
+    msg = let m = { 
+        _tag: tag;
+        _recipient: beneficiary;
+        _amount: amt
+    } in one_msg m;
+    send msg
+end
+
+procedure TransferMsg(impl: ByStr20, beneficiary: ByStr20, amt: Uint128)
+    msg = let m = {
+        _tag: "Transfer";
+        _recipient: impl;
+        _amount: zero;
+        to: beneficiary;
+        amount: amt 
+    } in one_msg m;
+    send msg
+end
+
+procedure PayZILFee(amt: Uint128)
+    ReadByStr20Config fee_collector; collector <- bystr20_read;
+    SendZIL add_funds collector amt
+end
+
+procedure PayTokenFee(token_address: ByStr20, amt: Uint128)
+    ReadByStr20Config fee_collector; collector <- bystr20_read;
+    TransferMsg token_address collector amt
+end
+
+procedure IncreaseAllowance(impl: ByStr20, spender: ByStr20, amt: Uint128)
+    msg = let m = {
+        _tag: "IncreaseAllowance";
+        _recipient: impl;
+        _amount: zero;
+        spender: spender;
+        amount: amt
+    } in one_msg m;
+    send msg
+end
+
+procedure PaybackForGas(tag: String)
+    ReadUint128Config tag; gas_back <- uint128_read;
+    is_zero = builtin eq zero gas_back;
+    match is_zero with
+    | True =>
+    | False => 
+        
+        is_smaller = builtin lt gas_back zil_100;
+        match is_smaller with
+        | True => SendZIL add_funds _sender gas_back
+        | False => 
+            e = GasFeeAnomaly; ThrowError e
+        end
+    end
+end
+procedure VoidChequeHash(cheque_hash: ByStr)
+    void_cheques[cheque_hash] := true
+end
+
+transition VoidCheque(hash: ByStr)
+    g = "VoidCheque";
+    IsAdmin; WalletIsNotLocked; PaybackForGas g;
+    VoidChequeHash hash
+end
+procedure AssertChequeHashValid(cheque_hash: ByStr)
+    cheque_invalid <- exists void_cheques[cheque_hash];
+    match cheque_invalid with 
+        | False =>
+        | True => e = InvalidCheque; ThrowError e
+    end
+end
+procedure AssertChequeIsAdminSigned(cheque_hash: ByStr, signature: ByStr64)
+    admin_pub_temp <- admin_pubkey;
+    valid_sig = builtin schnorr_verify admin_pub_temp cheque_hash signature;
+    match valid_sig with
+        | True =>
+            
+            VoidChequeHash cheque_hash
+        | False => e = InvalidSignature; ThrowError e
+    end
+end
+procedure VerifyAdminSignatureAndVoid(signable: SignableArgs, signature: ByStr64)
+    cheque_hash = signable_to_cheque_hash signable;
+    AssertChequeHashValid cheque_hash;
+    AssertChequeIsAdminSigned cheque_hash signature
+end
+procedure VerifyAdminOrServiceAccountSignatureAndVoidAndSetWasServiceAccount(signable: SignableArgs, signature: ByStr64)
+    cheque_hash = signable_to_cheque_hash signable;
+    AssertChequeHashValid cheque_hash;
+    admin_pub_temp <- admin_pubkey;
+    ReadByStr33Config ignite_service_account_pubkey; service_account_pubkey <- bystr33_read;
+    valid_admin_sig = builtin schnorr_verify admin_pub_temp cheque_hash signature;
+    valid_service_sig = builtin schnorr_verify service_account_pubkey cheque_hash signature;
+    valid = orb valid_admin_sig valid_service_sig;
+    match valid with
+        | True =>
+            
+            VoidChequeHash cheque_hash;
+            temp_was_service_account := valid_service_sig
+        | False => e = InvalidSignature; ThrowError e
+    end
+end
+
+
+transition SendFunds(beneficiary: ByStr20, amt: Uint128, signature: ByStr64)
+    g = "SendFunds";
+    signable = SBUB g beneficiary amt _this_address;
+    VerifyAdminSignatureAndVoid signable signature; WalletIsNotLocked; PaybackForGas g;
+    SendZIL add_funds beneficiary amt
+end
+
+transition Transfer(impl: ByStr20, beneficiary: ByStr20, amt: Uint128, signature: ByStr64)
+    g = "Transfer";
+    signable = SBBUB g impl beneficiary amt _this_address;
+    VerifyAdminSignatureAndVoid signable signature; WalletIsNotLocked; PaybackForGas g;
+    TransferMsg impl beneficiary amt
+end
+
+
+
+
+
+procedure SsnProxyAddrMsg(tag: String, ssnaddr: ByStr20, amt: Uint128)
+    ReadByStr20Config ssn_proxy; proxy <- bystr20_read; 
+    msg = let m = { 
+        _tag: tag;
+        _recipient: proxy;
+        _amount: amt;
+        ssnaddr: ssnaddr
+    } in one_msg m;
+    send msg
+end
+
+procedure SsnProxyPlainMsg(tag: String)
+    ReadByStr20Config ssn_proxy; proxy <- bystr20_read; 
+    msg = let m = { 
+        _tag: tag;
+        _recipient: proxy;
+        _amount: zero
+    } in one_msg m;
+    send msg
+end
+
+procedure SsnProxyRequestorMsg(tag: String, requestor: ByStr20)
+    ReadByStr20Config ssn_proxy; proxy <- bystr20_read; 
+    msg = let m = { 
+        _tag: tag;
+        _recipient: proxy;
+        _amount: zero;
+        requestor: requestor
+    } in one_msg m;
+    send msg
+end
+procedure DoWithdrawStakeRewards(ssnaddr: ByStr20)
+    tag = "WithdrawStakeRewards";
+    SsnProxyAddrMsg tag ssnaddr zero
+end
+
+transition WithdrawStakeRewards(ssnaddr: ByStr20, signature: ByStr64)
+    tag = "WithdrawStakeRewards";
+    signable = SBB tag ssnaddr _this_address;
+    VerifyAdminOrServiceAccountSignatureAndVoidAndSetWasServiceAccount signable signature; WalletIsNotLocked; PaybackForGas tag;
+    ReadByStr20Config ignite_service_account; service <- bystr20_read;
+    is_service_account = builtin eq _sender service;
+    temp_was_service_account := is_service_account; 
+    DoWithdrawStakeRewards ssnaddr
+end
+
+transition DelegateStake(ssnaddr: ByStr20, amt: Uint128, signature: ByStr64)
+    tag = "DelegateStake";
+    signable = SBUB tag ssnaddr amt _this_address;
+    VerifyAdminOrServiceAccountSignatureAndVoidAndSetWasServiceAccount signable signature; WalletIsNotLocked; PaybackForGas tag;
+    is_service_account <- temp_was_service_account;
+    match is_service_account with
+        | True =>
+            fee_tag = "DelegateStake_fee";
+            
+            ReadUint128Config fee_tag; percentage_fee <- uint128_read;
+            is_zero = builtin eq zero percentage_fee;
+            not_zero = negb is_zero;
+            match not_zero with
+                | True =>
+                    
+                    ReadByStr20Config fee_collector; collector <- bystr20_read;
+                    UpdateDiscount; discount <- temp_discount;
+                    fee_itself_discounted = sub_percentage_of_amt percentage_fee discount;
+                    match fee_itself_discounted with
+                    | Uint128Pair smaller_fee_percentage dis =>
+                        amt_to_send_and_fee = sub_percentage_of_amt amt smaller_fee_percentage;
+                        match amt_to_send_and_fee with
+                        | Uint128Pair to_send fee_to_pay =>
+                            SendZIL add_funds collector fee_to_pay;
+                            SsnProxyAddrMsg tag ssnaddr to_send
+                        end
+                    end
+                | False => SsnProxyAddrMsg tag ssnaddr amt
+            end
+        | False => SsnProxyAddrMsg tag ssnaddr amt
+    end
+end
+
+transition WithdrawStakeAmt(ssnaddr: ByStr20, amt: Uint128, signature: ByStr64)
+    tag = "WithdrawStakeAmt";
+    signable = SBUB tag ssnaddr amt _this_address;
+    VerifyAdminSignatureAndVoid signable signature; WalletIsNotLocked; PaybackForGas tag;
+    ReadByStr20Config ssn_proxy; proxy <- bystr20_read; 
+    msg = let m = { 
+        _tag: tag;
+        _recipient: proxy;
+        _amount: zero;
+        ssnaddr: ssnaddr;
+        amt: amt
+    } in one_msg m;
+    send msg
+end
+
+transition CompleteWithdrawal(signature: ByStr64)
+    tag = "CompleteWithdrawal";
+    signable = SB tag _this_address;
+    VerifyAdminSignatureAndVoid signable signature; WalletIsNotLocked; PaybackForGas tag;
+    SsnProxyPlainMsg tag
+end
+
+transition ReDelegateStake(ssnaddr: ByStr20, to_ssn: ByStr20, amount: Uint128, signature: ByStr64)
+    tag = "ReDelegateStake";
+    signable = SBBUB tag ssnaddr to_ssn amount _this_address;
+    VerifyAdminSignatureAndVoid signable signature; WalletIsNotLocked; PaybackForGas tag;
+    ReadByStr20Config ssn_proxy; proxy <- bystr20_read; 
+    msg = let m = {
+        _tag: tag;
+        _recipient: proxy;
+        _amount: zero;
+        ssnaddr: ssnaddr;
+        to_ssn: to_ssn;
+        amount: amount
+    } in one_msg m;
+    send msg
+end
+
+transition RequestDelegatorSwap(new_deleg_addr: ByStr20, signature: ByStr64)
+    tag = "RequestDelegatorSwap";
+    signable = SBB tag new_deleg_addr _this_address;
+    VerifyAdminSignatureAndVoid signable signature; WalletIsNotLocked; PaybackForGas tag;
+    ReadByStr20Config ssn_proxy; proxy <- bystr20_read; 
+    msg = let m = {
+        _tag: tag;
+        _recipient: proxy;
+        _amount: zero;
+        new_deleg_addr: new_deleg_addr
+    } in one_msg m;
+    send msg
+end
+
+transition RevokeDelegatorSwap(signature: ByStr64)
+    tag = "RevokeDelegatorSwap";
+    signable = SB tag _this_address;
+    VerifyAdminSignatureAndVoid signable signature; WalletIsNotLocked; PaybackForGas tag;
+    SsnProxyPlainMsg tag
+end
+
+transition ConfirmDelegatorSwap(requestor: ByStr20, signature: ByStr64)
+    tag = "ConfirmDelegatorSwap";
+    signable = SBB tag requestor _this_address;
+    VerifyAdminSignatureAndVoid signable signature; WalletIsNotLocked; PaybackForGas tag;
+    SsnProxyRequestorMsg tag requestor
+end
+
+transition RejectDelegatorSwap(requestor: ByStr20, signature: ByStr64)
+    tag = "RejectDelegatorSwap"; 
+    signable = SBB tag requestor _this_address;
+    VerifyAdminSignatureAndVoid signable signature; WalletIsNotLocked; PaybackForGas tag;
+    SsnProxyRequestorMsg tag requestor
+end
+
+
+
+
+
+procedure DoSwapExactTokensForZIL(token_address: ByStr20, token_amount: Uint128, min_zil_amount: Uint128, deadline_block: BNum, commission: Uint128)
+    UpdateDiscount; discount <- temp_discount;
+    params = zilswap_params_sub_commission_with_discount token_amount min_zil_amount commission discount;
+    match params with
+    | Quadruplet token_amt token_comm zil_amt zil_comm =>
+        
+        PayTokenFee token_address token_comm;
+        
+        ReadByStr20Config zilswap; swap_addr <- bystr20_read;
+        IncreaseAllowance token_address swap_addr token_amount;
+        msg = let m = {
+            _tag: "SwapExactTokensForZIL"; 
+            _recipient: swap_addr;
+            _amount: zero;
+            token_address: token_address;
+            token_amount: token_amt;
+            min_zil_amount: zil_amt;
+            deadline_block: deadline_block;
+            recipient_address: _this_address
+        } in one_msg m;
+        send msg
+    end
+end
+
+procedure DoSwapExactZILForTokens(token_address: ByStr20, zil_amount: Uint128, min_token_amount: Uint128, deadline_block: BNum, commission: Uint128)
+    UpdateDiscount; discount <- temp_discount;
+    params = zilswap_params_sub_commission_with_discount zil_amount min_token_amount commission discount;
+    match params with
+    | Quadruplet zil_amt zil_comm token_amt token_comm =>
+        
+        PayZILFee zil_comm;
+        
+        ReadByStr20Config zilswap; swap_addr <- bystr20_read;
+        msg = let m = {
+            _tag: "SwapExactZILForTokens"; 
+            _recipient: swap_addr; 
+            _amount: zil_amt; 
+            token_address: token_address;
+            min_token_amount: token_amt;
+            deadline_block: deadline_block;
+            recipient_address: _this_address
+        } in one_msg m;
+        send msg
+    end
+end
+
+procedure DoSwapExactTokensForTokens(token0_address: ByStr20, token0_amount: Uint128, token1_address: ByStr20, min_token1_amount: Uint128, deadline_block: BNum, commission: Uint128)
+    UpdateDiscount; discount <- temp_discount;
+    params = zilswap_params_sub_commission_with_discount token0_amount min_token1_amount commission discount;
+    match params with
+    | Quadruplet token0_amt token0_comm token1_amt token1_comm =>
+        
+        PayTokenFee token0_address token0_comm;
+        
+        ReadByStr20Config zilswap; swap_addr <- bystr20_read;
+        IncreaseAllowance token0_address swap_addr token0_amount;
+        msg = let m = {
+            _tag: "SwapExactTokensForTokens"; 
+            _recipient: swap_addr; 
+            _amount: zero; 
+            token0_address: token0_address;
+            token0_amount: token0_amt;
+            token1_address: token1_address;
+            min_token1_amount: token1_amt;
+            deadline_block: deadline_block;
+            recipient_address: _this_address
+        } in one_msg m;
+        send msg
+    end
+end
+
+
+
+
+
+transition SwapExactZILForTokens(token_address: ByStr20, zil_amount: Uint128, min_token_amount: Uint128, deadline_block: BNum, commission: Uint128, signature: ByStr64)
+    g = "SwapExactZILForTokens";
+    signable = SBUUNUB g token_address zil_amount min_token_amount deadline_block commission _this_address;
+    VerifyAdminSignatureAndVoid signable signature; WalletIsNotLocked; PaybackForGas g;
+    DoSwapExactZILForTokens token_address zil_amount min_token_amount deadline_block commission
+end
+transition SwapExactTokensForZIL(token_address: ByStr20, token_amount: Uint128, min_zil_amount: Uint128, deadline_block: BNum, commission: Uint128, signature: ByStr64)
+    g = "SwapExactTokensForZIL";
+    signable = SBUUNUB g token_address token_amount min_zil_amount deadline_block commission _this_address;
+    VerifyAdminSignatureAndVoid signable signature; WalletIsNotLocked; PaybackForGas g;
+    DoSwapExactTokensForZIL token_address token_amount min_zil_amount deadline_block commission
+end
+transition SwapExactTokensForTokens(token0_address: ByStr20, token0_amount: Uint128, token1_address: ByStr20, min_token1_amount: Uint128, deadline_block: BNum, commission: Uint128, signature: ByStr64)
+    g = "SwapExactTokensForTokens";
+    signable = SBUBUNUB g token0_address token0_amount token1_address min_token1_amount deadline_block commission _this_address;
+    VerifyAdminSignatureAndVoid signable signature; WalletIsNotLocked; PaybackForGas g;
+    DoSwapExactTokensForTokens token0_address token0_amount token1_address min_token1_amount deadline_block commission
+end
+
+
+
+
+
+procedure AssertValidRecoverySetup(pubkeys: List ByStr33, needed_signatures: Uint32)
+    len = bystr33_list_len pubkeys;
+    sig_lt_pub_len = builtin lt needed_signatures len;
+    pub_len_is_zero = builtin eq uint32_zero len;
+    sig_is_zero = builtin eq uint32_zero needed_signatures;
+    e = InvalidSRSetup;
+    match sig_lt_pub_len with
+    | True =>
+        match pub_len_is_zero with
+        | False =>
+            match sig_is_zero with
+            | False =>
+                are_unique = pubkeys_are_unique pubkeys;
+                match are_unique with
+                | True => 
+                
+                
+                | False => er = PubkeysAreNotUnique; ThrowError er
+                end
+            | True => ThrowError e
+            end
+        | True => ThrowError e
+        end
+    | False => ThrowError e
+    end
+end
+
+procedure VerifyAndVoidRecoveryMessage(msg: RecovererSignedMsg)
+    new_admin <- temp_nominated_admin;
+    cur_blk <- & BLOCKNUMBER;
+    match msg with
+    | RecovererSignedMsg pubkey valid_until sig =>
+        sr <- recoverers;
+        match sr with
+        | Setup keys sigs_required =>
+            
+            is_from_recoverer = bystr33_has_elem keys pubkey; 
+            not_expired = builtin blt cur_blk valid_until;
+            is_valid = andb is_from_recoverer not_expired;
+            match is_valid with
+            | True =>
+                
+                new_admin_hash = builtin sha256hash new_admin;
+                valid_until_hash = builtin sha256hash valid_until;
+                this_addr_hash = builtin sha256hash _this_address;
+                
+                p0_hash = builtin concat new_admin_hash valid_until_hash;
+                p1_hash = builtin concat p0_hash this_addr_hash;
+                cheque_hash = builtin to_bystr p1_hash;
+                AssertChequeValidityAndVoidIt cheque_hash pubkey sig
+            | False => e = RecoveryMsgPreconditionNotMet; ThrowError e
+            end
+        | NotSetup => e = SRNotSetup; ThrowError e 
+        end
+    end
+end
+
+procedure AssertRecoveryMsgLenIsTheNeededLen(msgs: List RecovererSignedMsg, sigs_required: Uint32)
+    len = recoverer_msg_list_len msgs;
+    is_same = builtin eq len sigs_required;
+    match is_same with
+    | True => 
+    | False => e = WrongRecoveryListLength; ThrowError e
+    end
+end
+procedure AssertRecoveryMsgPubkeysAreUnique(msgs: List RecovererSignedMsg)
+    are_unique = recoverer_msg_list_has_unique_pubkeys msgs;
+    match are_unique with
+    | True => 
+    | False => e = PubkeysAreNotUnique; ThrowError e
+    end
+end
+procedure SetNewAdmin(new_admin: ByStr33)
+    admin_pubkey := new_admin;
+    new_addr = builtin schnorr_get_address new_admin;
+    admin := new_addr
+end
+
+transition RecoverWallet(msgs: List RecovererSignedMsg, nominated_admin: ByStr33)
+    g = "RecoverWallet";
+    PaybackForGas g;
+    
+    sr <- recoverers;
+    match sr with
+    | Setup keys sigs_required =>
+        AssertRecoveryMsgLenIsTheNeededLen msgs sigs_required;
+        AssertRecoveryMsgPubkeysAreUnique msgs;
+        nominated_addr = builtin schnorr_get_address nominated_admin;
+        temp_nominated_admin := nominated_addr;
+        forall msgs VerifyAndVoidRecoveryMessage;
+        SetNewAdmin nominated_admin;
+        is_locked := false
+    | NotSetup => e = SRNotSetup; ThrowError e 
+    end
+end
+procedure DoLock()
+    sr <- recoverers;
+    match sr with
+    | Setup keys sigs_required => is_locked := true
+    | NotSetup => e = SRNotSetup; ThrowError e 
+    end
+end
+
+transition LockWallet()
+    g = "LockWallet";
+    IsAdmin; WalletIsNotLocked; PaybackForGas g;
+    DoLock
+end
+transition MetaLockWallet(signature: ByStr64)
+    g = "MetaLockWallet";
+    signable = SB g _this_address;
+    VerifyAdminSignatureAndVoid signable signature; WalletIsNotLocked; PaybackForGas g;
+    DoLock
+end
+
+transition SetupRecovery(pubkeys: List ByStr33, needed_signatures: Uint32, signature: ByStr64)
+    g = "SetupRecovery";
+    signable = SLB33U32B g pubkeys needed_signatures _this_address;
+    VerifyAdminSignatureAndVoid signable signature; WalletIsNotLocked; PaybackForGas g;
+    AssertValidRecoverySetup pubkeys needed_signatures;
+    recoverers_tmp = Setup pubkeys needed_signatures;
+    recoverers := recoverers_tmp
+end
+
+
+
+
+transition SellStakeToCookieJar(seller_ssn_addressses: List ByStr20, cookie_ssn_addressses: List ByStr20, signature: ByStr64)
+    g = "SellStakeToCookieJar";
+    signable = SLBLBB g seller_ssn_addressses cookie_ssn_addressses _this_address;
+    VerifyAdminSignatureAndVoid signable signature; WalletIsNotLocked; PaybackForGas g;
+    ReadByStr20Config ssn_proxy; proxy <- bystr20_read; 
+    ReadByStr20Config cookie_jar; cookie <- bystr20_read;
+    forall seller_ssn_addressses DoWithdrawStakeRewards;
+    msg = let m = {
+        _tag: "RequestDelegatorSwap"; 
+        _recipient: proxy;
+        _amount: zero;
+        new_deleg_addr: cookie
+    } in one_msg m;
+    send msg;
+    msg = let m = {
+        _tag: "SellStakeToCookieJar"; 
+        _recipient: cookie;
+        _amount: zero;
+        seller_ssn_addressses: seller_ssn_addressses;
+        cookie_ssn_addressses: cookie_ssn_addressses
+    } in one_msg m;
+    send msg
+end
+
+
+
+
+
+
+transition MoveToNewAddress(new_address: ByStr20 with contract field admin: ByStr20 end, signature: ByStr64)
+    g = "MoveToNewAddress";
+    signable = SBB g new_address _this_address;
+    VerifyAdminSignatureAndVoid signable signature; WalletIsNotLocked; PaybackForGas g;
+    
+    other_admin <-& new_address.admin;
+    AssertIsAdmin other_admin;
+    
+    rep <-& init_config.reputation;
+    msg = let m = {
+        _tag: "MoveToNewAddress";
+        _recipient: rep;
+        _amount: zero;
+        new_address: new_address
+    } in one_msg m;
+    send msg
+end
+
+
+
+
+procedure ZeroIgniteWithdrawStreak()
+    ignite_withdraw_streak := zero
+end
+procedure IncrementIgniteWithdrawStreak()
+    s <- ignite_withdraw_streak;
+    added = builtin add s one;
+    ignite_withdraw_streak := added
+end
+
+
+
+transition WithdrawStakeRewardsSuccessCallBack(ssnaddr: ByStr20, rewards: Uint128)
+    fee_tag = "WithdrawStakeRewardsSuccessCallBack_fee";
+    
+    ReadByStr20Config ssnlist_implementation; ssnlist <- bystr20_read;
+    is_ssnlist = builtin eq ssnlist _sender;
+    
+    match is_ssnlist with
+    | True => 
+        was_service_account <- temp_was_service_account;
+        temp_was_service_account := false;
+        ReadUint128Config fee_tag; percentage_fee <- uint128_read;
+        is_zero = builtin eq zero percentage_fee;
+        not_zero = negb is_zero;
+        was_service_account_fee_not_zero = andb was_service_account not_zero;
+        match was_service_account_fee_not_zero with
+        | True => 
+            
+            rewards_and_fee = sub_percentage_of_amt rewards percentage_fee;
+            match rewards_and_fee with
+            | Uint128Pair rewards_to_keep fee_to_pay =>
+                PayZILFee fee_to_pay
+            end
+        | False => 
+        end;
+        ReadByStr20Config ignite_ssn; ignite_snn_addr <- bystr20_read;
+        is_ignite_ssn = builtin eq ssnaddr ignite_snn_addr;
+        match is_ignite_ssn with
+        | True => 
+            IncrementIgniteWithdrawStreak;
+            
+            rep <-& init_config.reputation;
+            streak <- ignite_withdraw_streak;
+            msg = let m = {
+                _tag: "MintMeReputation";
+                _recipient: rep;
+                _amount: zero;
+                rewards: rewards;
+                streak: streak
+            } in one_msg m;
+            send msg
+        | False => ZeroIgniteWithdrawStreak
+        end
+    | False => 
+    end
+end
+
+transition DelegateStakeSuccessCallBack(ssnaddr: ByStr20, amount: Uint128) end
+transition WithdrawStakeAmtSuccessCallBack(ssnaddr: ByStr20, amount: Uint128) end
+transition CompleteWithdrawalNoUnbondedStakeCallBack(amount: Uint128) end
+transition CompleteWithdrawalSuccessCallBack(amount: Uint128) end
+transition ReDelegateStakeSuccessCallBack(ssnaddr: ByStr20, tossn: ByStr20, amount: Uint128) end
+
+transition RecipientAcceptMint(minter: ByStr20, recipient: ByStr20, amount: Uint128) end
+transition RecipientAcceptTransfer(sender: ByStr20, recipient: ByStr20, amount: Uint128) end
+transition RecipientAcceptTransferFrom(initiator: ByStr20, sender: ByStr20, recipient: ByStr20, amount: Uint128) end
+transition TransferSuccessCallBack(sender: ByStr20, recipient: ByStr20, amount : Uint128) end
+transition TransferFromSuccessCallBack(initiator: ByStr20, sender: ByStr20, recipient: ByStr20, amount: Uint128) end
+
+transition AddFunds() accept end

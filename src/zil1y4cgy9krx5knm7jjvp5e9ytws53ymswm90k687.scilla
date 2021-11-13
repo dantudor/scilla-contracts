@@ -1,0 +1,136 @@
+scilla_version 0
+
+(* Standard Libraries *)
+import IntUtils BoolUtils ListUtils PairUtils
+
+library DistributorLib
+
+type Token = | Balance of ByStr20 Uint128
+
+
+let one_msg =
+  fun (msg : Message) =>
+  let nil_msg = Nil {Message} in
+  Cons {Message} msg nil_msg
+
+
+type Erorr = | NO_AMOUNT_ERROR
+             | NOT_OWNER_ERROR
+             | UNKNOWN_OWNER_ERROR
+
+let getErrorValue =
+fun(error: Erorr) =>
+    match error with
+        | NO_AMOUNT_ERROR => Int32 -1
+        | NOT_OWNER_ERROR => Int32 -2
+        | UNKNOWN_OWNER_ERROR => Int32 -3
+    end
+
+let fst = @fst ByStr20 Token
+let snd = @snd ByStr20 Token
+
+contract Distributor(contract_owner: ByStr20)
+
+
+field balances: Map ByStr20 (Map ByStr20 Uint128) = Emp ByStr20 (Map ByStr20 Uint128)
+field owner: ByStr20 = contract_owner
+field pending_operator : Option ByStr20 = None {ByStr20}
+
+
+procedure ThrowError(error: Erorr)
+  code = getErrorValue error;
+  e = {_exception: "Error"; code: code};
+  throw e
+end
+
+procedure IsOwner()
+    admin <- owner;
+    is_owner = builtin eq _sender admin;
+    match is_owner with
+        | True =>
+        | False =>
+            code = NOT_OWNER_ERROR;
+            ThrowError code
+    end
+end
+
+procedure UpdateAmount(pair: Pair ByStr20 Token)
+    account = fst pair;
+    token = snd pair;
+    match token with
+        | Balance token_address amount =>
+            op_balance <- balances[account][token_address];
+            new_balance = match op_balance with
+                | Some balance => builtin add balance amount
+                | None => amount
+            end;
+            balances[account][token_address] := new_balance
+    end
+end
+
+procedure TransferRewards(token_address: ByStr20)
+    op_amount <- balances[_sender][token_address];
+    match op_amount with
+        | Some amount =>
+            delete balances[_sender][token_address];
+            msg = {_tag: "Transfer"; _recipient: token_address; _amount: Uint128 0; to: _sender; amount: amount};
+            msgs = one_msg msg;
+            send msgs
+        | None =>
+            code = NO_AMOUNT_ERROR;
+            ThrowError code
+    end
+end
+
+
+transition Rewards(accounts: List (Pair ByStr20 Token))
+    IsOwner;
+    forall accounts UpdateAmount
+end
+
+transition Claim(tokens: List ByStr20)
+    forall tokens TransferRewards
+end
+
+transition Transfer(token_address: ByStr20, to: ByStr20, amount: Uint128)
+    IsOwner;
+    msg = {_tag: "Transfer"; _recipient: token_address; _amount: Uint128 0; to: to; amount: amount};
+    msgs = one_msg msg;
+    send msgs
+end
+
+transition RequestOwnershipTransfer(new_owner : ByStr20)
+      IsOwner;
+      op_operator = Some {ByStr20} new_owner;
+      pending_operator := op_operator
+end
+
+transition ConfirmOwnershipTransfer()
+  optional_po <- pending_operator;
+  match optional_po with
+  | Some new_operator =>
+      caller_is_new_owner = builtin eq _sender new_operator;
+      match caller_is_new_owner with
+      | True =>
+          owner := new_operator;
+          none = None {ByStr20};
+          pending_operator := none
+      | False =>
+        err = UNKNOWN_OWNER_ERROR;
+        ThrowError err
+      end
+  | None =>
+  end
+end
+
+transition RecipientAcceptTransferFrom(initiator : ByStr20, sender : ByStr20, recipient : ByStr20, amount : Uint128)
+end
+
+transition RecipientAcceptTransfer(sender : ByStr20, recipient : ByStr20, amount : Uint128)
+end
+
+transition TransferSuccessCallBack(sender : ByStr20, recipient : ByStr20, amount : Uint128)
+end
+
+transition TransferFromSuccessCallBack (initiator : ByStr20, sender : ByStr20, recipient : ByStr20, amount : Uint128)
+end

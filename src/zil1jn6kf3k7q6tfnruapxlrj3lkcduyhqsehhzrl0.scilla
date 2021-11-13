@@ -1,0 +1,790 @@
+      (* ZWallUser *)
+
+(***************************************************)
+(*                 Scilla version                  *)
+(***************************************************)
+
+scilla_version 0
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+import IntUtils BoolUtils
+library ZWallUser
+
+type OperatorAction =
+  | OperatorActionSetUnlock of Uint256 Uint128
+  | OperatorActionClearUnlock of Uint256
+  | OperatorActionSetUpdate of Uint256 Uint128
+  | OperatorActionClearUpdate of Uint256
+  | OperatorActionSetTagMap of ByStr20 Uint256 Uint256 ByStr20 Uint256
+  | OperatorActionClearTagMap of ByStr20 Uint256 Uint256 ByStr20
+  | OperatorActionClearTagMapSlot of ByStr20 Uint256 Uint256
+  | OperatorActionSetTagProp of ByStr20 Uint256 Uint256 String
+  | OperatorActionClearTagProp of ByStr20 Uint256 Uint256
+  | OperatorActionSetTagFlag of ByStr20 Uint256 Uint256 Uint256
+  | OperatorActionClearTagFlag of ByStr20 Uint256 Uint256
+  | OperatorActionSetTag of ByStr20 Uint256 Uint256
+  | OperatorActionIncTag of ByStr20 Uint256 Uint256
+  | OperatorActionDecTag of ByStr20 Uint256 Uint256
+  | OperatorActionClearTag of ByStr20 Uint256
+  | OperatorActionDeleteTags of ByStr20
+  | OperatorActionSetData of ByStr20 Uint256 String
+  | OperatorActionClearData of ByStr20 Uint256
+  | OperatorActionDeleteDatas of ByStr20
+  | OperatorActionBan of ByStr20
+  | OperatorActionSetActive of ByStr20
+  | OperatorActionHide of ByStr20
+  | OperatorActionTransfer of ByStr20 ByStr20 Uint128
+  | OperatorActionSetHold of Uint32
+  
+type State =
+  | Active
+  | Withdrawing of BNum
+  | Banned
+
+let one_msg =
+  fun (msg: Message) =>
+  let nil_msg = Nil {Message} in
+  Cons {Message} msg nil_msg
+
+
+let optional_value =
+  tfun 'A =>
+  fun (default: 'A) =>
+  fun (opt_val: Option 'A) =>
+    match opt_val with
+    | Some v => v
+    | None => default
+    end
+    
+let zero128  = Uint128 0
+let zero256  = Uint256 0
+let true = True
+let false = False
+
+let get_state = 
+  fun (value: Option State) =>
+  let opt = @optional_value State in
+  let active = Active in
+  opt active value  
+
+let get_val128 = 
+  fun (value: Option Uint128) =>
+  let opt = @optional_value Uint128 in
+  opt zero128 value 
+ 
+let get_val256 = 
+  fun (value: Option Uint256) =>
+  let opt = @optional_value Uint256 in
+  opt zero256 value
+  
+(* Error exception *)
+type Error =
+  | CodeNotContractOwner
+  | CodeInvalidParameter
+  | CodeInvalidSender
+  | CodeInvalidOperation
+  | CodeNotContractOwnerOrOperator
+  | CodeNotActive
+let make_error =
+fun (result : Error) =>
+  let result_code = 
+    match result with
+    | CodeNotContractOwner  => Int32 -1
+    | CodeInvalidParameter => Int32 -2
+    | CodeInvalidSender => Int32 -3
+    | CodeInvalidOperation => Int32 -4
+    | CodeNotContractOwnerOrOperator => Int32 -5
+    | CodeNotActive => Int32 -6
+    end
+  in
+  { _exception : "ZWallUserError"; code : result_code }
+
+let zil_address = 0x0000000000000000000000000000000000000000
+
+contract ZWallUser
+(
+  initial_owner : ByStr20,
+  initial_hold: Uint32,
+  token : ByStr20
+)
+
+field operators: Map ByStr20 Bool
+  = Emp ByStr20 Bool
+field owner : ByStr20 = initial_owner
+field hold : Uint32 = initial_hold
+field pending_owner : ByStr20 = zil_address
+
+field user_deposit : Map ByStr20 Uint128
+             = Emp ByStr20 Uint128 
+field user_data : Map ByStr20 (Map Uint256 (String))
+             = Emp ByStr20 (Map Uint256 (String)) 
+field user_tags : Map ByStr20 (Map Uint256 (Uint256))
+             = Emp ByStr20 (Map Uint256 (Uint256))
+field user_tag_map : Map ByStr20 (Map Uint256 (Map Uint256 (Map ByStr20 (Uint256))))
+             = Emp ByStr20 (Map Uint256 (Map Uint256 (Map ByStr20 (Uint256))))
+field user_tag_prop : Map ByStr20 (Map Uint256 (Map Uint256 (String)))
+             = Emp ByStr20 (Map Uint256 (Map Uint256 (String)))
+field user_tag_flag : Map ByStr20 (Map Uint256 (Map Uint256 (Uint256)))
+             = Emp ByStr20 (Map Uint256 (Map Uint256 (Uint256)))
+field user_state : Map ByStr20 State
+             = Emp ByStr20 State
+field unlock_cost : Map Uint256 Uint128
+             = Emp Uint256 Uint128 
+field update_cost : Map Uint256 Uint128
+             = Emp Uint256 Uint128
+(*It is dirty hack to calculate deposit value*)             
+field temp_cost :  Uint128 = zero128     
+
+field is_user_active :  Bool = false
+field is_operator_active :  Bool = true
+
+(* Emit Errors *)
+procedure ThrowError(err : Error)
+  e = make_error err;
+  throw e
+end
+
+procedure ThrowUnlessSenderIsOwner()
+  current_owner <- owner;
+  is_owner = builtin eq _sender current_owner;
+  match is_owner with
+  | True =>
+  | False =>
+    err = CodeNotContractOwner;
+    ThrowError err
+  end
+end
+
+procedure ThrowUnlessActiveUser()
+  active <- is_user_active;
+  match active with
+  | True =>
+  | False =>
+    err = CodeNotActive;
+    ThrowError err
+  end
+end
+
+procedure ThrowUnlessActiveOperator()
+  active <- is_operator_active;
+  match active with
+  | True =>
+  | False =>
+    err = CodeNotActive;
+    ThrowError err
+  end
+end
+
+procedure ThrowUnlessSenderIsOwnerOrOperator()
+  current_owner <- owner;
+  maybe_operator <- operators[_sender];
+  is_owner = builtin eq _sender current_owner;
+  is_allowed = let opt = @optional_value Bool in
+               let is_operator = opt false maybe_operator in
+               orb is_operator is_owner;
+  match is_allowed with
+  | True =>
+  | False =>
+    err = CodeNotContractOwnerOrOperator;
+    ThrowError err
+  end
+end
+
+procedure OperatorInvokedEvent()
+  e = { _eventname: "OperatorInvoked"; 
+    operator: _sender};
+  event e
+end
+
+procedure SendToken(amount: Uint128, to_address : ByStr20)
+  msg_to_token =  {
+    _tag : "Transfer"; _recipient: token; _amount: zero128;
+    to: to_address; amount: amount
+  };
+  msgs = one_msg msg_to_token;
+  send msgs
+end
+
+procedure ReceiveToken(amount: Uint128)
+  msg_to_token = {
+    _tag : "TransferFrom"; _recipient: token; _amount: zero128;
+    from: _sender; to: _this_address; amount: amount
+  };
+  msgs = one_msg msg_to_token;
+  send msgs
+end
+
+procedure UpdateUserData(data: Pair Uint256 String)
+  match data with 
+    | Pair id value =>
+      acc <- temp_cost;
+      maybe_old <- user_data[_sender][id];
+      match maybe_old with
+        | Some old_value =>
+          maybe_val <- update_cost[id];
+          val = get_val128 maybe_val;
+          new_acc = builtin add acc val;
+          temp_cost := new_acc
+        | None =>
+          maybe_val <- unlock_cost[id];
+          match maybe_val with
+            | Some val =>
+              new_acc = builtin add acc val;
+              temp_cost := new_acc
+            | None =>
+              err = CodeInvalidOperation;
+              ThrowError err
+          end
+      end;
+      user_data[_sender][id] := value
+  end
+end
+
+procedure OperatorActionPerform(action: OperatorAction)
+  match action with 
+    | OperatorActionSetUnlock id amount =>
+      unlock_cost[id] := amount
+    | OperatorActionClearUnlock id =>
+      delete unlock_cost[id]
+    | OperatorActionSetUpdate id amount =>
+      update_cost[id] := amount
+    | OperatorActionClearUpdate id =>
+      delete update_cost[id] 
+    | OperatorActionSetTagMap user id slot mapper val =>
+      user_tag_map[user][id][slot][mapper] := val
+    | OperatorActionClearTagMap user id slot mapper =>
+      delete user_tag_map[user][id][slot][mapper]
+    | OperatorActionClearTagMapSlot user id slot =>
+      delete user_tag_map[user][id][slot]
+    | OperatorActionSetTagProp user id prop value =>
+      user_tag_prop[user][id][prop] := value
+    | OperatorActionClearTagProp user id prop =>
+      delete user_tag_prop[user][id][prop]
+    | OperatorActionSetTagFlag user id flag value =>
+      user_tag_flag[user][id][flag] := value
+    | OperatorActionClearTagFlag user id flag =>
+      delete user_tag_flag[user][id][flag]
+    | OperatorActionSetTag user id value =>
+      user_tags[user][id] := value
+    | OperatorActionIncTag user id value =>
+      maybe_old <- user_tags[user][id];
+      old = get_val256 maybe_old;
+      new = builtin add old value;
+      user_tags[user][id] := new
+    | OperatorActionDecTag user id value =>
+      maybe_old <- user_tags[user][id];
+      old = get_val256 maybe_old;
+      new = builtin sub old value;
+      user_tags[user][id] := new
+    | OperatorActionClearTag user id =>
+      delete user_tags[user][id];
+      delete user_tag_map[user][id];
+      delete user_tag_prop[user][id];
+      delete user_tag_flag[user][id]
+    | OperatorActionDeleteTags user =>
+      delete user_tags[user];
+      delete user_tag_map[user];
+      delete user_tag_prop[user];
+      delete user_tag_flag[user]
+    | OperatorActionSetData user id value =>
+      user_data[user][id] := value
+    | OperatorActionClearData user id =>
+      delete user_data[user][id]
+    | OperatorActionDeleteDatas user =>
+      delete user_data[user]
+    | OperatorActionBan user =>
+      banned = Banned;
+      user_state[user] := banned
+    | OperatorActionSetActive user =>
+      active = Active;
+      user_state[user] := active
+    | OperatorActionHide user =>
+      delete user_state[user]
+    | OperatorActionTransfer user receiver amount => 
+      maybe_deposit <- user_deposit[user];
+      old_deposit = get_val128 maybe_deposit;
+      transfer_amount = let needs_clamp = uint128_gt amount old_deposit in
+        match needs_clamp with
+          | True => 
+            old_deposit
+          | False =>
+            amount
+        end;
+      new_deposit = builtin sub old_deposit transfer_amount;
+      user_deposit[user] := new_deposit;
+      needs_send = uint128_gt transfer_amount zero128; 
+      match needs_send with
+        | False =>
+        | True => 
+          SendToken transfer_amount receiver
+      end 
+    | OperatorActionSetHold value =>
+      hold := value
+  end
+end
+
+(* Transitions *)
+transition UpdateActive(user: Bool, operator: Bool)
+  ThrowUnlessSenderIsOwner;
+  is_user_active := user;
+  is_operator_active := operator;
+  e = {_eventname : "ActiveUpdated"; is_user_active : user; is_operator_active: operator};
+  event e
+end
+
+transition AddOperator(operator: ByStr20)
+  ThrowUnlessSenderIsOwner;
+  is_operator <- operators[operator];
+  match is_operator with
+  | None =>
+  | Some val => 
+    err = CodeInvalidParameter;
+    ThrowError err
+  end;
+  operators[operator] := true;
+  e = {_eventname : "OperatorAdded"; operator : operator};
+  event e
+end
+
+transition RemoveOperator(operator: ByStr20)
+  ThrowUnlessSenderIsOwner;
+  is_operator <- operators[operator];
+  match is_operator with
+  | Some val => 
+  | None =>
+    err = CodeInvalidParameter;
+    ThrowError err
+  end;
+  delete operators[operator];
+  e = {_eventname : "OperatorRemoved"; operator : operator};
+  event e
+end
+
+(*User ops *)
+
+transition UpdateData(list: List (Pair Uint256 String))
+  ThrowUnlessActiveUser;
+  maybe_state <- user_state[_sender];
+  state = get_state maybe_state;
+  match state with 
+    | Active =>
+    | Withdrawing bnum => 
+      err = CodeInvalidOperation;
+      ThrowError err
+    | Banned => 
+      err = CodeInvalidSender;
+      ThrowError err
+  end;
+  temp_cost := zero128;
+  forall list UpdateUserData;
+  cost <- temp_cost;
+  temp_cost := zero128;
+  active = Active;
+  user_state[_sender] := active;
+  needs_receive = uint128_gt cost zero128; 
+  match needs_receive with
+    | False =>
+    | True => 
+      maybe_deposit <- user_deposit[_sender];
+      old_deposit = get_val128 maybe_deposit;
+      new_deposit = builtin add old_deposit cost;
+      user_deposit[_sender] := new_deposit;
+      ReceiveToken cost;
+      e = { _eventname: "DepositIncreased"; 
+        amount: cost; deposit: new_deposit };
+      event e
+  end;
+  e = { _eventname: "DataUpdated"; 
+        user: _sender };
+  event e
+end
+
+transition RequestWithdraw()
+  ThrowUnlessActiveUser;
+  maybe_state <- user_state[_sender];
+  state = get_state maybe_state;
+  match state with 
+    | Active =>
+    | Withdrawing bnum => 
+      err = CodeInvalidOperation;
+      ThrowError err
+    | Banned => 
+      err = CodeInvalidSender;
+      ThrowError err
+  end;
+  maybe_deposit <- user_deposit[_sender];
+  old_deposit = get_val128 maybe_deposit;
+  needs_refund = uint128_gt old_deposit zero128; 
+  match needs_refund with
+    | True => 
+    | False =>
+      err = CodeInvalidOperation;
+      ThrowError err
+  end;
+  delay <- hold;
+  b <- &BLOCKNUMBER;
+  time = builtin badd b delay;
+  withdrawing = Withdrawing time;
+  user_state[_sender] := withdrawing;
+  e = { _eventname: "WithdrawRequested"; 
+    amount: old_deposit};
+  event e
+end
+
+transition Withdraw()
+  ThrowUnlessActiveUser;
+  maybe_state <- user_state[_sender];
+  state = get_state maybe_state;
+  match state with 
+    | Active =>
+      err = CodeInvalidOperation;
+      ThrowError err
+    | Withdrawing bnum => 
+      b <- &BLOCKNUMBER;
+      is_before = builtin blt b bnum;
+      match is_before with
+        | False =>
+        | True => 
+          err = CodeInvalidOperation;
+          ThrowError err
+      end
+    | Banned => 
+      err = CodeInvalidSender;
+      ThrowError err
+  end;
+  maybe_deposit <- user_deposit[_sender];
+  old_deposit = get_val128 maybe_deposit;
+  delete user_state[_sender];
+  delete user_data[_sender];
+  delete user_deposit[_sender];
+  needs_refund = uint128_gt old_deposit zero128; 
+  match needs_refund with
+    | False =>
+    | True => 
+      SendToken old_deposit _sender
+  end;
+  e = { _eventname: "Withdrawn"; 
+    amount: old_deposit};
+  event e
+end
+
+(* Operator ops *)
+transition OperatorInvoke(actions: List (OperatorAction))
+  ThrowUnlessActiveOperator;
+  ThrowUnlessSenderIsOwnerOrOperator;
+  forall actions OperatorActionPerform;
+  OperatorInvokedEvent
+end
+
+transition OperatorSetUnlock(id: Uint256, cost: Uint128)
+  ThrowUnlessActiveOperator;
+  ThrowUnlessSenderIsOwnerOrOperator;
+  a1 = OperatorActionSetUnlock id cost;
+  OperatorActionPerform a1;
+  OperatorInvokedEvent
+end
+
+transition OperatorClearUnlock(id: Uint256)
+  ThrowUnlessActiveOperator;
+  ThrowUnlessSenderIsOwnerOrOperator;
+  a1 = OperatorActionClearUnlock id;
+  OperatorActionPerform a1;
+  OperatorInvokedEvent
+end
+
+transition OperatorSetUpdate(id: Uint256, cost: Uint128)
+  ThrowUnlessActiveOperator;
+  ThrowUnlessSenderIsOwnerOrOperator;
+  a1 = OperatorActionSetUpdate id cost;
+  OperatorActionPerform a1;
+  OperatorInvokedEvent
+end
+
+transition OperatorClearUpdate(id: Uint256)
+  ThrowUnlessActiveOperator;
+  ThrowUnlessSenderIsOwnerOrOperator;
+  a1 = OperatorActionClearUpdate id;
+  OperatorActionPerform a1;
+  OperatorInvokedEvent
+end
+
+transition OperatorBan(user: ByStr20)
+  ThrowUnlessActiveOperator;
+  ThrowUnlessSenderIsOwnerOrOperator;
+  a1 = OperatorActionBan user;
+  OperatorActionPerform a1;
+  OperatorInvokedEvent
+end
+
+transition OperatorSetActive(user: ByStr20)
+  ThrowUnlessActiveOperator;
+  ThrowUnlessSenderIsOwnerOrOperator;
+  a1 = OperatorActionSetActive user;
+  OperatorActionPerform a1;
+  OperatorInvokedEvent
+end
+
+transition OperatorHide(user: ByStr20)
+  ThrowUnlessActiveOperator;
+  ThrowUnlessSenderIsOwnerOrOperator;
+  a1 = OperatorActionHide user;
+  OperatorActionPerform a1;
+  OperatorInvokedEvent
+end
+
+transition OperatorSetHold(value: Uint32)
+  ThrowUnlessActiveOperator;
+  ThrowUnlessSenderIsOwnerOrOperator;
+  a1 = OperatorActionSetHold value;
+  OperatorActionPerform a1;
+  OperatorInvokedEvent
+end
+
+transition OperatorSetData(user:ByStr20, id: Uint256, value: String)
+  ThrowUnlessActiveOperator;
+  ThrowUnlessSenderIsOwnerOrOperator;
+  a1 = OperatorActionSetData user id value;
+  OperatorActionPerform a1;
+  OperatorInvokedEvent
+end
+
+transition OperatorClearData(user:ByStr20, id: Uint256)
+  ThrowUnlessActiveOperator;
+  ThrowUnlessSenderIsOwnerOrOperator;
+  a1 = OperatorActionClearData user id;
+  OperatorActionPerform a1;
+  OperatorInvokedEvent
+end
+
+transition OperatorDeleteDatas(user:ByStr20)
+  ThrowUnlessActiveOperator;
+  ThrowUnlessSenderIsOwnerOrOperator;
+  a1 = OperatorActionDeleteDatas user;
+  OperatorActionPerform a1;
+  OperatorInvokedEvent
+end
+
+transition OperatorSetTagMap(user:ByStr20, id: Uint256, slot: Uint256, mapper: ByStr20, value: Uint256)
+  ThrowUnlessActiveOperator;
+  ThrowUnlessSenderIsOwnerOrOperator;
+  a1 = OperatorActionSetTagMap user id slot mapper value;
+  OperatorActionPerform a1;
+  OperatorInvokedEvent
+end
+
+transition OperatorClearTagMap(user:ByStr20, id: Uint256, slot: Uint256, mapper: ByStr20)
+  ThrowUnlessActiveOperator;
+  ThrowUnlessSenderIsOwnerOrOperator;
+  a1 = OperatorActionClearTagMap user id slot mapper;
+  OperatorActionPerform a1;
+  OperatorInvokedEvent
+end
+
+transition OperatorClearTagMapSlot(user:ByStr20, id: Uint256, slot: Uint256)
+  ThrowUnlessActiveOperator;
+  ThrowUnlessSenderIsOwnerOrOperator;
+  a1 = OperatorActionClearTagMapSlot user id slot;
+  OperatorActionPerform a1;
+  OperatorInvokedEvent
+end
+
+transition OperatorSetTagProp(user:ByStr20, id: Uint256, prop: Uint256, value: String)
+  ThrowUnlessActiveOperator;
+  ThrowUnlessSenderIsOwnerOrOperator;
+  a1 = OperatorActionSetTagProp user id prop value;
+  OperatorActionPerform a1;
+  OperatorInvokedEvent
+end
+
+transition OperatorClearTagProp(user:ByStr20, id: Uint256, prop: Uint256)
+  ThrowUnlessActiveOperator;
+  ThrowUnlessSenderIsOwnerOrOperator;
+  a1 = OperatorActionClearTagProp user id prop;
+  OperatorActionPerform a1;
+  OperatorInvokedEvent
+end
+
+transition OperatorSetTagFlag(user:ByStr20, id: Uint256, flag: Uint256, value: Uint256)
+  ThrowUnlessActiveOperator;
+  ThrowUnlessSenderIsOwnerOrOperator;
+  a1 = OperatorActionSetTagFlag user id flag value;
+  OperatorActionPerform a1;
+  OperatorInvokedEvent
+end
+
+transition OperatorClearTagFlag(user:ByStr20, id: Uint256, flag: Uint256)
+  ThrowUnlessActiveOperator;
+  ThrowUnlessSenderIsOwnerOrOperator;
+  a1 = OperatorActionClearTagFlag user id flag;
+  OperatorActionPerform a1;
+  OperatorInvokedEvent
+end
+
+transition OperatorSetTag(user:ByStr20, id: Uint256, value: Uint256)
+  ThrowUnlessActiveOperator;
+  ThrowUnlessSenderIsOwnerOrOperator;
+  a1 = OperatorActionSetTag user id value;
+  OperatorActionPerform a1;
+  OperatorInvokedEvent
+end
+
+transition OperatorIncTag(user:ByStr20, id: Uint256, value: Uint256)
+  ThrowUnlessActiveOperator;
+  ThrowUnlessSenderIsOwnerOrOperator;
+  a1 = OperatorActionIncTag user id value;
+  OperatorActionPerform a1;
+  OperatorInvokedEvent
+end
+
+transition OperatorDecTag(user:ByStr20, id: Uint256, value: Uint256)
+  ThrowUnlessActiveOperator;
+  ThrowUnlessSenderIsOwnerOrOperator;
+  a1 = OperatorActionDecTag user id value;
+  OperatorActionPerform a1;
+  OperatorInvokedEvent
+end
+
+transition OperatorClearTag(user:ByStr20, id: Uint256)
+  ThrowUnlessActiveOperator;
+  ThrowUnlessSenderIsOwnerOrOperator;
+  a1 = OperatorActionClearTag user id;
+  OperatorActionPerform a1;
+  OperatorInvokedEvent
+end
+
+transition OperatorDeleteTags(user:ByStr20)
+  ThrowUnlessActiveOperator;
+  ThrowUnlessSenderIsOwnerOrOperator;
+  a1 = OperatorActionDeleteTags user;
+  OperatorActionPerform a1;
+  OperatorInvokedEvent
+end
+
+transition OperatorTransfer(from:ByStr20, to: ByStr20, amount: Uint128)
+  ThrowUnlessActiveOperator;
+  ThrowUnlessSenderIsOwnerOrOperator;
+  a1 = OperatorActionTransfer from to amount;
+  OperatorActionPerform a1;
+  OperatorInvokedEvent
+end
+
+(* Ownership *)
+transition TransferOwnership(
+  new_owner : ByStr20
+)
+  ThrowUnlessSenderIsOwner;
+  existing_owner <- owner;
+  new_owner_is_existing_owner = builtin eq new_owner existing_owner;
+  match new_owner_is_existing_owner with
+  | True =>
+    err = CodeInvalidParameter;
+    ThrowError err
+  | False =>
+    pending_owner := new_owner
+  end
+end
+
+transition AcceptPendingOwnership()
+  new_owner <- pending_owner;
+  sender_is_pending_owner = builtin eq _sender new_owner;
+  match sender_is_pending_owner with
+  | False =>
+    err = CodeInvalidSender;
+    ThrowError err
+  | True =>
+    owner := new_owner;
+    pending_owner := zil_address;
+    e = { _eventname: "OwnershipTransferred"; owner: new_owner };
+    event e
+  end
+end
+
+
+(* Getters *)
+transition ZWallUserGetUserData(user: ByStr20, id: Uint256, request: Uint256)
+  some_user_data <- user_data[user][id];
+  msg_to_sender = { _tag : "ZWallUserGetUserDataCallBack"; _recipient : _sender; _amount : zero128; 
+                      user: user; id: id; request: request; user_data : some_user_data };
+  msgs = one_msg msg_to_sender
+end
+
+transition ZWallUserGetUserTag(user: ByStr20, id: Uint256, request: Uint256)
+  some_user_tag <- user_tags[user][id];
+  msg_to_sender = { _tag : "ZWallUserGetUserTagCallBack"; _recipient : _sender; _amount : zero128; 
+                      user: user; id: id; request: request; user_tag : some_user_tag };
+  msgs = one_msg msg_to_sender
+end
+
+transition ZWallUserGetUserDeposit(user: ByStr20, request: Uint256)
+  some_user_deposit <- user_deposit[user];
+  value = get_val128 some_user_deposit;
+  msg_to_sender = { _tag : "ZWallUserGetUserDepositCallBack"; _recipient : _sender; _amount : zero128; 
+                      user: user; request: request; user_deposit : value };
+  msgs = one_msg msg_to_sender
+end
+
+transition ZWallUserCheckState(user: ByStr20, request: Uint256)
+  maybe_state <- user_state[user];
+  state = get_state maybe_state;
+  msg_to_sender = match maybe_state with
+    | None =>
+      { _tag : "ZWallUserCheckStateCallBack"; _recipient : _sender; _amount : zero128; 
+                      user: user; request: request; status: Uint32 0 }
+    | Some state =>
+      match state with 
+      | Active =>
+        { _tag : "ZWallUserCheckStateCallBack"; _recipient : _sender; _amount : zero128; 
+                        user: user; request: request; status: Uint32 1 }
+      | Withdrawing bnum => 
+        { _tag : "ZWallUserCheckStateCallBack"; _recipient : _sender; _amount : zero128; 
+                        user: user; request: request; status: Uint32 2 }
+      | Banned => 
+        { _tag : "ZWallUserCheckStateCallBack"; _recipient : _sender; _amount : zero128; 
+                        user: user; request: request; status: Uint32 3 }
+      end
+  end;
+  msgs = one_msg msg_to_sender
+end
+
+
+(***************************************)
+(*             Callbacks               *)
+(***************************************)
+
+transition RecipientAcceptTransferFrom(
+  initiator : ByStr20,
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+  is_valid_transfer_to_self =
+    let self_triggered = builtin eq initiator _this_address in
+    let is_transfer_to_self = builtin eq recipient _this_address in
+    andb self_triggered is_transfer_to_self;
+
+  match is_valid_transfer_to_self with
+  | False =>
+    err = CodeInvalidOperation;
+    ThrowError err
+  | True => (* noop *)
+  end
+end
+
+transition TransferFromSuccessCallBack(
+  initiator : ByStr20,
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+  (*Do nothing*)
+end
+
+transition TransferSuccessCallBack(
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+  (*Do nothing*)
+end

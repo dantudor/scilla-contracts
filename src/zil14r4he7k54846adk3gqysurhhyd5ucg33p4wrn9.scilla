@@ -1,0 +1,537 @@
+(* FeesPreSaleContractPhaseTwo *)
+
+(***************************************************)
+(*                 Scilla version                  *)
+(***************************************************)
+
+scilla_version 0
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+import IntUtils BoolUtils
+library FeesPreSaleContractPhaseTwo
+
+let one_msg =
+  fun (msg: Message) =>
+  let nil_msg = Nil {Message} in
+  Cons {Message} msg nil_msg
+
+let optional_value =
+  tfun 'A =>
+  fun (default: 'A) =>
+  fun (opt_val: Option 'A) =>
+    match opt_val with
+    | Some v => v
+    | None => default
+    end
+
+let one32  = Uint32 1
+let one128  = Uint128 1
+let one256  = Uint256 1
+let zero128  = Uint128 0
+let zero256  = Uint256 0
+let true = True
+let false = False
+
+let get_val128 = 
+  fun (value: Option Uint128) =>
+  let opt = @optional_value Uint128 in
+  opt zero128 value 
+    
+let muldiv =
+  fun (a: Uint128) =>
+  fun (b: Uint128) =>
+  fun (c: Uint128) =>
+    let opt = @optional_value Uint256 in
+    let opt2 = @optional_value Uint128 in
+    let oa = builtin to_uint256 a in let ha = opt zero256 oa in
+    let ob = builtin to_uint256 b in let hb = opt zero256 ob in
+    let oc = builtin to_uint256 c in let hc = opt zero256 oc in
+    let num = builtin mul ha hb in
+    let hv =  builtin div num hc in
+    let ov = builtin to_uint128 hv in
+      opt2 zero128 ov
+      
+let muldiv_up =
+  fun (a: Uint128) =>
+  fun (b: Uint128) =>
+  fun (c: Uint128) =>
+    let opt = @optional_value Uint256 in
+    let opt2 = @optional_value Uint128 in
+    let oa = builtin to_uint256 a in let ha = opt zero256 oa in
+    let ob = builtin to_uint256 b in let hb = opt zero256 ob in
+    let oc = builtin to_uint256 c in let hc = opt zero256 oc in
+    let num = builtin mul ha hb in
+    let num_p = builtin add num hc in
+    let num_p_1 = builtin sub num_p one256 in
+    let hv =  builtin div num_p_1 hc in
+    let ov = builtin to_uint128 hv in
+      opt2 zero128 ov
+
+(* Error exception *)
+type Error =
+  | CodeNotContractOwner
+  | CodeInvalidParameter
+  | CodeInvalidAmount
+  | CodeNotStarted
+  | CodeNotFinished
+  | CodeStarted
+  | CodeNotActive
+  | CodeAlreadyClaimed
+  | CodeFinished
+  | CodeNotEnded
+  | CodeCooldown
+
+  
+let make_error =
+fun (result : Error) =>
+  let result_code = 
+    match result with
+    | CodeNotContractOwner  => "Only Contract Owner Can Invoke"
+    | CodeInvalidParameter  => "Invalid StartBlockNumber Or EndBlockNumber"
+    | CodeInvalidAmount     => "Invalid Amount Entered"
+    | CodeNotStarted        => "Pre-Sale not yet Started"
+    | CodeNotFinished       => "Pre-Sale not yet Finished"
+    | CodeStarted           => "Pre-Sale already Started"
+    | CodeNotActive         => "Pre-Sale is not Active"
+    | CodeAlreadyClaimed    => "Tokens already Claimed"
+    | CodeFinished          => "Pre-Sale already Finished"
+    | CodeNotEnded          => "Pre-Sale not yet Ended"
+    | CodeCooldown          =>  "Cooldown Period , tokens can be claimed after cooldown period ends"
+
+    end
+  in
+  { _exception : "FeesPreSaleError"; error_message : result_code }
+  
+
+
+
+
+
+
+
+
+contract FeesPreSaleContractPhaseTwo
+(
+  owner : ByStr20,
+  fees_token_address : ByStr20,
+  token_price: Uint128,
+  target_maximum: Uint128, 
+  target_minimum: Uint128, 
+  cooldown: Uint32
+(*  deadline : Uint32*)
+)
+
+field contribution: Map ByStr20 Uint128 = Emp ByStr20 Uint128
+field claim_state: Map ByStr20 Uint32 = Emp ByStr20 Uint32
+field total_contribution: Uint128 = zero128
+
+field min_contribution: Uint128 = builtin mul token_price target_minimum
+field max_contribution: Uint128 = builtin mul token_price target_maximum
+field start_block: BNum = _creation_block
+field end_block: BNum = _creation_block
+field cooldown_block: BNum = _creation_block
+field started: Bool = false
+field finished: Bool = false
+field finished_fallback: Bool = false   
+
+
+(**************************************)
+(*             Procedures             *)
+(**************************************)
+
+
+
+(* Emit Errors *)
+procedure ThrowError(err : Error)
+  e = make_error err;
+  throw e
+end
+
+
+
+procedure IsOwner()
+  is_owner = builtin eq _sender owner;
+  match is_owner with
+  | True =>
+  | False =>
+    err = CodeNotContractOwner;
+    ThrowError err
+  end
+end
+
+procedure ThrowIfStarted()
+  is_start <- started;
+  match is_start with
+  | False =>
+  | True =>
+    err = CodeStarted;
+    ThrowError err
+  end
+end
+
+
+procedure StartSale(start: BNum, endb: BNum)
+  b <- &BLOCKNUMBER;
+  is_valid_time =
+    let in_future = builtin blt b start in
+    let is_forward = builtin blt start endb in
+    andb in_future is_forward;
+  match is_valid_time with
+    | True => 
+    | False =>
+      err = CodeInvalidParameter;
+      ThrowError err
+  end;
+(*  deadb = builtin badd endb deadline;*)
+  max = builtin mul token_price target_maximum;
+  min = builtin mul token_price target_minimum;
+  started := true;
+  start_block := start;
+  end_block := endb;
+  min_contribution := min;
+  max_contribution := max;
+ 
+  
+  e = { _eventname: "SaleInitiated"; 
+    start_block: start; end_block: endb; 
+    min_contribution: min; max_contribution: max };
+  event e
+end
+
+
+procedure ThrowNotStarted()
+  is_start <- started;
+  match is_start with
+  | True =>
+  | False =>
+    err = CodeNotStarted;
+    ThrowError err
+  end
+end
+
+procedure ThrowNotActive()
+  b <- &BLOCKNUMBER;
+  startb <- start_block;
+  endb <- end_block;
+  is_active = 
+    let before_start = builtin blt b startb in
+    let after_eq_start = negb before_start in
+    let before_end = builtin blt b endb in
+    andb after_eq_start before_end;
+  match is_active with
+  | True =>
+  | False =>
+    err = CodeNotActive;
+    ThrowError err
+  end
+end
+
+procedure ThrowIfFinished()
+  b <- &BLOCKNUMBER;
+  is_finished <- finished;
+  match is_finished with
+  | False =>
+  | True =>
+    err = CodeFinished;
+    ThrowError err
+  end
+end
+
+procedure ThrowNotFinished()
+  b <- &BLOCKNUMBER;
+  is_finished <- finished;
+  match is_finished with
+  | True =>
+  | False =>
+    err = CodeNotFinished;
+    ThrowError err
+  end
+end
+
+procedure ThrowIfCooldown()
+  b <- &BLOCKNUMBER;
+  coolb <- cooldown_block;
+  is_cooldown = builtin blt b coolb;
+  match is_cooldown with
+  | False =>
+  | True =>
+    err = CodeCooldown;
+    ThrowError err
+  end
+end
+procedure SendZil(amount: Uint128, to_address : ByStr20)
+  msg = { _tag : "AddFunds"; _recipient: to_address; _amount: amount };
+  msgs = one_msg msg;
+  send msgs
+end
+
+procedure SendToken(amount: Uint128, to_address : ByStr20)
+  msg_to_token =  {
+    _tag : "Transfer"; _recipient: fees_token_address; _amount: zero128;
+    to: to_address; amount: amount
+  };
+  msgs = one_msg msg_to_token;
+  send msgs
+end
+
+procedure ThrowNotEnded()
+  b <- &BLOCKNUMBER;
+  endb <- end_block;
+  before_end = builtin blt b endb;
+  match before_end with
+  | False =>
+  | True =>
+    err = CodeNotEnded;
+    ThrowError err
+  end
+end
+
+procedure ProcessFinish()
+  total <- total_contribution;
+  max <- max_contribution;
+  min <- min_contribution;
+  
+  is_overflow = uint128_lt max total;
+  is_underlow = uint128_lt total min;
+  match is_underlow with
+  | True =>
+    max_token_amount = builtin div max token_price;
+    SendToken max_token_amount owner;
+    e = { _eventname: "RefundToken"; 
+      amount: max_token_amount};
+    event e
+  | False =>
+    fix_contribution = 
+      match is_overflow with
+        | True => max
+        | False => total
+      end;
+    max_token_amount = builtin div max token_price;
+    sold_token_amount = builtin div fix_contribution token_price;
+    fund_amount = builtin mul sold_token_amount token_price;
+    refund_token_amount = builtin sub max_token_amount sold_token_amount;
+    needs_fund = uint128_gt fund_amount zero128; 
+    match needs_fund with
+    | False =>
+    | True =>
+      SendZil fund_amount owner;
+      e = { _eventname: "FundSale"; amount: fund_amount};
+      event e
+    end;
+    needs_refund_token = uint128_gt refund_token_amount zero128; 
+    match needs_refund_token with
+    | False =>
+    | True =>
+      SendToken refund_token_amount owner;
+      e = { _eventname: "RefundToken"; amount: refund_token_amount};
+      event e
+    end
+  end
+end
+
+procedure ProcessClaim()
+  total <- total_contribution;
+  max <- max_contribution;
+  min <- min_contribution;
+  some_current_contribution <- contribution[_sender];
+  current_contribution = get_val128 some_current_contribution;
+  
+  is_overflow = uint128_lt max total;
+  is_underlow = uint128_lt total min;
+  match is_underlow with
+  | True =>
+    SendZil current_contribution _sender;
+    e = { _eventname: "RefundContribution"; 
+      amount: current_contribution};
+    event e
+  | False =>
+    real_contribution = 
+      match is_overflow with
+        | True =>
+          muldiv current_contribution max total
+        | False =>
+          current_contribution
+      end;
+    token_amount = builtin div real_contribution token_price;
+    spend_amount = match is_overflow with
+        | True =>
+          muldiv_up current_contribution max total
+        | False =>
+          builtin mul token_amount token_price
+      end;
+    needs_refund = uint128_gt current_contribution spend_amount; 
+    match needs_refund with
+    | False =>
+    | True =>
+      refund_amount = builtin sub current_contribution spend_amount;
+      SendZil refund_amount _sender;
+      e = { _eventname: "RefundContribution"; amount: refund_amount};
+      event e
+    end;
+    needs_send = uint128_gt token_amount zero128; 
+    match needs_send with
+    | False =>
+    | True =>
+      SendToken token_amount _sender;
+      e = { _eventname: "TokenClaimed"; amount: token_amount};
+      event e
+    end
+  end
+end
+(***************************************)
+(*             Transitions             *)
+(***************************************)
+
+transition InitiateSaleIn(delay: Uint32, duration: Uint32)
+  IsOwner;
+  ThrowIfStarted;
+  b <- &BLOCKNUMBER;
+  start = builtin badd b delay;
+  endb = builtin badd start duration;
+  StartSale start endb
+end
+
+
+transition Contribute()
+  ThrowNotStarted;
+  ThrowNotActive;
+  ThrowIfFinished;
+  token_amount = builtin div _amount token_price;
+  is_valid = uint128_gt token_amount zero128;
+  match is_valid with
+  | True =>
+  | False =>
+    err = CodeInvalidAmount;
+    ThrowError err
+  end;
+  accept;
+  contribute_amount = builtin mul token_amount token_price;
+  needs_refund = uint128_gt _amount contribute_amount; 
+  match needs_refund with
+  | False =>
+  | True =>
+    refund_amount = builtin sub _amount contribute_amount;
+    SendZil refund_amount _sender;
+    e = { _eventname: "RefundContribution"; amount: refund_amount};
+    event e
+  end;
+  max <- max_contribution;
+  total <- total_contribution;
+  some_current_contribution <- contribution[_sender];
+  current_contribution = get_val128 some_current_contribution;
+  new_contribution = builtin add current_contribution contribute_amount;
+  is_overflow = uint128_lt max new_contribution;
+  match is_overflow with
+    | False =>
+    | True =>
+      err = CodeInvalidAmount;
+      ThrowError err
+  end;  
+  new_total = builtin add total contribute_amount;
+  
+  contribution[_sender] := new_contribution;
+  total_contribution := new_total;
+  e = { _eventname: "ContrubutionAdded"; 
+    amount: _amount; new_contribution: new_contribution};
+  event e
+end
+
+
+transition FinishSale()
+  ThrowNotStarted;
+  ThrowNotEnded;
+  ThrowIfFinished;
+  finished := true;
+  b <- &BLOCKNUMBER;
+  coolb = builtin badd b cooldown;
+  cooldown_block := coolb;
+  ProcessFinish;
+  e = { _eventname: "Finished"};
+  event e
+end
+
+
+transition Claim()
+  ThrowNotStarted;
+  ThrowNotFinished;
+  ThrowIfCooldown;
+  maybe_exists <- claim_state[_sender];
+  match maybe_exists with
+    | Some t =>
+      err = CodeAlreadyClaimed;
+      ThrowError err
+    | None =>
+      claim_state[_sender] := one32;
+      ProcessClaim
+  end;
+  e = { _eventname: "Claimed"};
+  event e
+end
+
+
+
+(* @dev:.To Withdraw fees_token_address from contract . Only Admin                                 *)
+transition WithdrawContractTokenBalance(tokensWithdraw : Uint128 , recipient : ByStr20)
+ IsOwner ;
+  msg = { _tag : "Transfer"; _recipient :fees_token_address ; _amount : Uint128 0; to : recipient ; amount : tokensWithdraw} ;
+         msgs = one_msg msg;
+         send msgs ;
+  e = {_eventname : "WithdrawalSuccessful"; description: "Tokens has been successfully withdrawed" };
+        event e       
+end
+(**)
+
+(**)
+transition WithdrawZil(amount : Uint128 , recipient : ByStr20)
+ IsOwner ;
+ msg = {_tag: ""; _recipient: recipient; _amount: amount};  
+ msgs = one_msg msg;
+ send msgs 
+end
+(**)
+
+transition TopUpZilBalance()
+  IsOwner;
+  accept;
+  
+  e = { _eventname: "TopUpZilBalance"; 
+     amount: _amount };
+  event e
+end
+
+(*Below Four are callback transition to accept ZRC2 tockens in contract*)
+ transition RecipientAcceptTransfer(
+  
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+end
+
+ transition RecipientAcceptTransferFrom(
+  
+  initiator : ByStr20,
+  sender : ByStr20 ,
+  recipient : ByStr20,
+  amount : Uint128
+)
+end
+
+transition TransferSuccessCallBack(
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+end
+
+                    
+transition TransferFromSuccessCallBack(
+   initiator : ByStr20,
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+end
+

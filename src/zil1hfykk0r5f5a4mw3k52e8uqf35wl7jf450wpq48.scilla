@@ -1,0 +1,280 @@
+scilla_version 0
+
+import BoolUtils PairUtils ListUtils
+library UnicutesEggLibrary
+
+let one_msg =
+    fun (msg : Message) =>
+        let nil_msg = Nil {Message} in
+        Cons {Message} msg nil_msg
+
+let uint32_one = Uint32 1
+let uint256_zero = Uint256 0
+let uint256_one = Uint256 1
+let none_bystr20 = None {ByStr20}
+
+(* =================== *)
+(* Egg Hatching States *)
+(* =================== *)
+
+let state_egg_hatching = Uint32 1
+let state_egg_hatched = Uint32 2
+
+(* User-defined ADTs *)
+type Dummy =
+| Dummy
+
+let verdad = Dummy
+
+(* created at, hatch at, egg state *)
+type Egg =
+  | Egg of BNum BNum Uint32
+
+(* Error codes *)
+type Error =
+| CodeEggDontExist
+| CodeNotProxy
+| CodeEggAlreadyHatched
+| CodeNotOwner
+| CodeEggNotReadyForHatch
+| CodeMaxSupplyReached
+let make_error =
+  fun (result: Error) =>
+    let result_code = 
+      match result with
+      | CodeEggDontExist => Int32 -1
+      | CodeNotProxy => Int32 -2
+      | CodeEggAlreadyHatched => Int32 -3
+      | CodeNotOwner => Int32 -4
+      | CodeEggNotReadyForHatch => Int32 -5
+      | CodeMaxSupplyReached => Int32 -6
+      end
+    in
+    { _exception : "Error"; code : result_code }
+
+let code_success = Uint32 1
+
+contract UnicutesEgg
+(
+  contract_owner: ByStr20,
+  unicutes_smart_contract: ByStr20,
+  name : String,
+  symbol: String,
+  max_supply : Uint256
+)
+
+(* ================ *)
+(* Admin Parameters *)
+(* ================ *)
+
+(* listen for events and feed random values on request basis*)
+field oracle : ByStr20 = contract_owner
+
+(* ensure only white listed proxy contracts can call main contract *)
+field whitelisted_proxies : Map ByStr20 Dummy = Emp ByStr20 Dummy
+
+(* ==================== *)
+(* Non-Admin Parameters *)
+(* ==================== *)
+
+(* addr, creation, hatching, quantity, secure random value *)
+field egg_owners : Map Uint256 ByStr20 = Emp Uint256 ByStr20
+field egg_count : Uint256 = Uint256 0
+field owned_eggs : Map ByStr20 (Map Uint256 Egg) = Emp ByStr20 (Map Uint256 Egg)
+
+(* ================== *)
+(* General Procedures *)
+(* ================== *)
+
+procedure ThrowError(err : Error)
+  e = make_error err;
+  throw e
+end
+
+procedure IsEggNotHatched(egg : Egg)
+  match egg with
+  | Egg created_at hatch_at state =>
+    has_egg_hatched = builtin eq state state_egg_hatched;
+    match has_egg_hatched with
+    | True =>
+      err = CodeEggAlreadyHatched;
+      ThrowError err
+    | False =>
+    end
+  end
+end
+
+(* ================ *)
+(* Admin Procedures *)
+(* ================ *)
+
+procedure IsOwner()
+  is_owner = builtin eq contract_owner _sender;
+  match is_owner with
+  | True =>
+  | False =>
+    err = CodeNotOwner;
+    ThrowError err
+  end
+end
+
+(* ================ *)
+(* Proxy Proceduers *)
+(* ================ *)
+
+procedure IsMaxSupplyReached(current_supply: Uint256)
+  is_max_supply_reached = builtin eq current_supply max_supply;
+  match is_max_supply_reached with
+  | False =>
+  | True =>
+    err = CodeMaxSupplyReached;
+    ThrowError err
+  end
+end
+
+procedure IsProxy()
+  is_proxy <- whitelisted_proxies[_sender];
+  match is_proxy with
+  | None =>
+    err = CodeNotProxy;
+    ThrowError err
+  | Some x =>
+  end
+end
+
+(* ================= *)
+(* Admin Transitions *)
+(* ================= *)
+
+transition AddProxy(address: ByStr20)
+  IsOwner;
+  whitelisted_proxies[address] := verdad;
+  e = {
+    _eventname  : "AddProxy";
+    amount      : _amount;
+    code        : code_success;
+    new_proxy   : address
+  };
+  event e
+end
+
+transition DeleteProxy(address: ByStr20)
+  IsOwner;
+  delete whitelisted_proxies[address];
+  e = {
+    _eventname  : "DeleteProxy";
+    amount      : _amount;
+    code        : code_success;
+    new_proxy   : address
+  };
+  event e
+end
+
+
+(* ===================== *)
+(* Proxy Egg Transitions *)
+(* ===================== *)
+
+transition BuyEgg(hatching_time : Uint32, sender : ByStr20)
+  IsProxy;
+  size <- egg_count;
+  IsMaxSupplyReached size;
+  egg_id = builtin add size uint256_one;
+  egg_count := egg_id;  
+  created_at <- & BLOCKNUMBER;
+  hatch_at = builtin badd created_at hatching_time;
+  egg <- owned_eggs[sender][egg_id];
+  new_egg = Egg created_at hatch_at state_egg_hatching;
+  owned_eggs[sender][egg_id] := new_egg;
+  egg_owners[egg_id] := sender;
+  e = {
+    _eventname        : "BuyEgg";
+    amount            : _amount;
+    egg_id            : egg_id;
+    egg_created_at    : created_at;
+    egg_hatch_at      : hatch_at;
+    sender            : sender
+  };
+  event e
+end
+
+transition HatchEgg(egg_id : Uint256, sender : ByStr20)
+  IsProxy;
+  egg_option <- owned_eggs[sender][egg_id];
+  match egg_option with
+  | None =>
+    err = CodeEggDontExist;
+    ThrowError err
+  | Some egg =>
+    IsEggNotHatched egg;
+    match egg with
+    | Egg created_at hatch_at state =>
+      block_number <- & BLOCKNUMBER;
+      ready_for_hatch = builtin blt hatch_at block_number;
+      match ready_for_hatch with
+      | False =>
+        err = CodeEggNotReadyForHatch;
+        ThrowError err
+      | True =>
+      end;
+      new_egg = Egg created_at hatch_at state_egg_hatched;
+      owned_eggs[sender][egg_id] := new_egg;
+      e = {
+        _eventname       : "HatchEgg";
+        amount           : _amount;
+        egg_id           : egg_id;
+        egg_created_at   : created_at;
+        egg_hatch_at     : hatch_at;
+        sender           : sender;
+        egg_state        : state_egg_hatched
+      };
+      event e;
+      (* call unicutes contract and register unicute *)
+      msg_to_unicutes = {
+        _tag          : "CreateUnicute";
+        _recipient    : unicutes_smart_contract;
+        _amount       : _amount; 
+        sender        : sender;
+        token_id      : egg_id
+      };
+      msg = one_msg msg_to_unicutes;
+      send msg
+    end
+  end
+end
+
+transition PaidHatchEgg(egg_id : Uint256, sender : ByStr20)
+  IsProxy;
+  egg <- owned_eggs[sender][egg_id];
+  match egg with
+  | None =>
+    err = CodeEggDontExist;
+    ThrowError err
+  | Some egg =>
+    IsEggNotHatched egg;
+    match egg with
+    | Egg created_at hatch_at state =>
+      new_egg = Egg created_at hatch_at state_egg_hatched;
+      owned_eggs[sender][egg_id] := new_egg;
+      e = {
+        _eventname : "PaidHatchEgg";
+        amount           : _amount;
+        egg_id           : egg_id;
+        egg_created_at   : created_at;
+        egg_hatch_at     : hatch_at;
+        sender           : sender
+      };
+      event e;
+      (* call unicutes contract and register unicute *)
+      msg_to_unicutes = {
+        _tag          : "CreateUnicute";
+        _recipient    : unicutes_smart_contract;
+        _amount       : _amount; 
+        sender        : sender;
+        token_id      : egg_id
+      };
+      msg = one_msg msg_to_unicutes;
+      send msg
+    end
+  end
+end

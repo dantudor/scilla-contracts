@@ -1,0 +1,55 @@
+scilla_version 0
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+
+import ListUtils
+
+library MultiDistributor
+
+type DistributionLeaf =
+| DistributionLeaf of ByStr20 Uint128 (* account, amount *)
+
+type Claim =
+| Claim of Uint32 DistributionLeaf (List ByStr32) (* epoch number, leaf, proof path as a list of hashes *)
+
+let zero = Uint128 0
+
+let map_msgs = fun (list : List (Pair ByStr20 Claim)) =>
+  let foldl = @list_foldl (Pair ByStr20 Claim) (List Message) in
+  let init = Nil {Message} in
+  let iter =
+    fun (msgs : List Message) =>
+    fun (item : (Pair ByStr20 Claim)) =>
+      match item with
+      | Pair address claim =>
+        match claim with
+        | Claim epoch_number leaf proof =>
+          match leaf with
+          | DistributionLeaf account amount =>
+            let msg = {_tag : "ClaimRaw"; _recipient : address; _amount : zero;
+                       epoch_number : epoch_number; account : account; amount: amount; proof : proof} in
+            Cons {Message} msg msgs
+          end
+        end
+      end
+  in
+  foldl iter init list
+
+(***************************************************)
+(*             The contract definition             *)
+(***************************************************)
+
+contract MultiDistributor()
+
+(***************************************)
+(*             Transitions             *)
+(***************************************)
+
+(* @dev: Claims from multiple distributions at one go. *)
+(* @param claims: List of claims to invoke.            *)
+transition ClaimMulti(claims: List (Pair ByStr20 Claim))
+  msgs = map_msgs claims;
+  send msgs
+end

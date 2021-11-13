@@ -1,0 +1,160 @@
+scilla_version 0
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+
+import ListUtils
+
+library FeesAirdropContract
+
+
+(*****************************************)
+
+let zero = Uint128 0
+
+let one_msg = 
+  fun (msg : Message) => 
+    let nil_msg = Nil {Message} in
+    Cons {Message} msg nil_msg
+
+
+(***************************************************)
+(*             The contract definition             *)
+(***************************************************)
+
+
+contract FeesAirdropContract(
+   contract_owner: ByStr20,
+   fees_token_address : ByStr20)
+   
+
+(* Mutable fields *)   
+
+field rewardRecipients : Map ByStr20 Uint128 = Emp ByStr20 Uint128
+
+
+(**************************************)
+(*             Procedures             *)
+(**************************************)
+
+(* @dev: To check _sender is owner *)
+procedure IsOwner()
+accept;
+  is_owner = builtin eq contract_owner _sender;
+  match is_owner with
+  |True => 
+  |False =>
+    err = { _exception : "NotOwner" ; details : "Only Contract Owner can invoke"};
+    throw err
+    end
+end
+
+
+(*@dev: To add airdrop recipients *)
+procedure AddRecipientAddresses (airdropRecipients : Pair (ByStr20)(Uint128))
+       
+  match airdropRecipients with
+  | Pair address amount =>
+    
+    isAddressAvailable <- rewardRecipients[address] ;
+    match isAddressAvailable with
+    |Some val =>
+      newVal = builtin add val amount ;
+      rewardRecipients[address] := newVal
+    |None =>
+      rewardRecipients[address] := amount
+      end  
+  end
+  end
+
+
+
+
+(***************************************)
+(*             Transitions             *)
+(***************************************)
+
+(* @dev: To add list of airdrop recipients along with amount                                              *)
+(* @dev: Contract owner input the data in JSON format                                                     *)
+(* @param :List of Pair consisting of a value of type ByStr20 address and a value of type Uint128 amount  *)
+
+transition AirdropRecipients(airdropRecipients : List( Pair (ByStr20)(Uint128)))               
+    IsOwner ;
+    forall airdropRecipients AddRecipientAddresses
+   
+end
+
+
+(* @dev: To claim airdrop                                     *)
+
+transition ClaimAirdrop()
+
+isAddressAvailable <- rewardRecipients[_sender] ;
+match isAddressAvailable with
+    |Some claimToken =>
+     isClaimToken = builtin eq claimToken zero ;
+     match isClaimToken with
+       |False =>
+         msg1 = { _tag : "Transfer"; _recipient : fees_token_address ; _amount : Uint128 0; to : _sender ; amount : claimToken} ;
+         msgs = one_msg msg1;
+         send msgs ;
+         rewardRecipients[_sender] := zero;
+         e = {_eventname : "Claimed"; amount: claimToken };
+        event e
+       |True =>
+         e = {_eventname : "AlreadyClaimed"; description: "No more tokens to be claimed" };
+        event e
+       end
+    |None =>
+     err = { _exception : "AddressNotAuthorized" ; details : "No airdrop tokens for this address"};
+     throw err
+      end  
+end
+
+(* @dev:.To Withdraw token from contract . Only Admin                                 *)
+transition WithdrawContractTokenBalance(tokensWithdraw : Uint128 , recipient : ByStr20)
+ IsOwner ;
+  msg = { _tag : "Transfer"; _recipient : fees_token_address ; _amount : Uint128 0; to : recipient ; amount : tokensWithdraw} ;
+         msgs = one_msg msg;
+         send msgs ;
+  e = {_eventname : "WithdrawalSuccessful"; description: "Tokens has been successfully withdrawed" };
+        event e       
+end
+(**)
+
+
+(*Below Four are callback transition to accept ZRC2 tockens in contract*)
+ transition RecipientAcceptTransfer(
+  
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+end
+
+ transition RecipientAcceptTransferFrom(
+  
+  initiator : ByStr20,
+  sender : ByStr20 ,
+  recipient : ByStr20,
+  amount : Uint128
+)
+end
+
+transition TransferSuccessCallBack(
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+end
+
+                    
+transition TransferFromSuccessCallBack(
+   initiator : ByStr20,
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+end
+

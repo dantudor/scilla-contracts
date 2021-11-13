@@ -1,0 +1,173 @@
+scilla_version 0
+
+import BoolUtils
+library UnicutesVoteContestLibrary
+
+let zero = Uint128 0
+let one = Uint128 1
+let one_uint256 = Uint256 1
+let uint32_one = Uint32 1
+let false = False
+let true = True
+
+(* returns singleton List Message *)
+let one_msg =
+    fun (msg : Message) =>
+        let nil_msg = Nil {Message} in
+        Cons {Message} msg nil_msg
+
+(* Error codes *)
+type Error =
+| CodeClosed
+| CodeNotOwner
+| CodeAlreadyVoted
+| CodeIllegalOperation
+let make_error =
+  fun (result: Error) =>
+    let result_code = 
+      match result with
+      | CodeClosed            => Int32 -1
+      | CodeNotOwner          => Int32 -2
+      | CodeAlreadyVoted      => Int32 -3
+      | CodeIllegalOperation  => Int32 -4
+      end
+    in
+    { _exception : "Error"; code : result_code }
+
+contract UnicutesVoteContest
+(
+  contract_owner: ByStr20,
+  unicutes_nft_contract: ByStr20,
+  name : String,
+  symbol: String
+)
+
+field is_open : Bool = True
+field unicute_votes : Map Uint256 Uint256 = Emp Uint256 Uint256
+field addr_unicute_vote : Map ByStr20 (Map Uint256 Uint256) = Emp ByStr20 (Map Uint256 Uint256)
+field total_votes : Uint128 = Uint128 0
+
+procedure ThrowError(err: Error)
+  e = make_error err;
+  throw e
+end
+
+(* ================ *)
+(* Admin Procedures *)
+(* ================ *)
+
+procedure IsOpen()
+  is <- is_open;
+  match is with
+  | True =>
+  | False =>
+    err = CodeClosed;
+    ThrowError err
+  end
+end
+
+procedure IsOwner()
+  is_owner = builtin eq contract_owner _sender;
+  match is_owner with
+  | True =>
+  | False =>
+    err = CodeNotOwner;
+    ThrowError err
+  end
+end
+
+(* ==================== *)
+(* Anonymous Procedures *)
+(* ==================== *)
+
+procedure IncrementTotalVotes()
+  current_total_votes <- total_votes;
+  new_total_votes = builtin add current_total_votes one;
+  total_votes := new_total_votes
+end
+
+procedure RegisterVoter(voter: Uint256, vote: Uint256)
+  addr_unicute_vote[_sender][voter] := vote
+end
+
+procedure AddVote(unicute: Uint256)
+  option_current_votes <- unicute_votes[unicute];
+  match option_current_votes with
+  | None =>
+    err = CodeIllegalOperation;
+    ThrowError err
+  | Some current_votes =>
+    new_votes = builtin add current_votes one_uint256;
+    unicute_votes[unicute] := new_votes
+  end
+end
+
+procedure IsVoterSameAsVote(voter: Uint256, vote: Uint256)
+  is_equal = builtin eq vote voter;
+  match is_equal with
+  | True =>
+    err = CodeIllegalOperation;
+    ThrowError err
+  | False =>
+  end
+end
+
+procedure HasVoted(voter: Uint256)
+  option_vote <- addr_unicute_vote[_sender][voter];
+  match option_vote with
+  | Some some_voter =>
+    err = CodeAlreadyVoted;
+    ThrowError err
+  | None =>
+  end
+end
+
+(* ===================== *)
+(* Anonymous Transitions *)
+(* ===================== *)
+
+(* Close the party *)
+transition Close()
+   IsOwner;
+   val = False;
+   is_open := val;
+   e = {
+    _eventname: "Close";
+    amount : _amount
+  };
+  event e
+end
+
+(* Vote on your favorite unicute! *)
+transition VoteOnUnicute(voter: Uint256, vote: Uint256)
+  HasVoted voter;
+  IsVoterSameAsVote voter vote;
+  msg_to_unicutes = {
+    _tag  : "Unicute";
+    _amount: zero;
+    _recipient : unicutes_nft_contract;
+    owner: _sender;
+    token_id: voter
+  };
+  msg = one_msg msg_to_unicutes;
+  send msg;
+  RegisterVoter voter vote;
+  AddVote vote;
+  IncrementTotalVotes;
+  e = {_eventname: "VoteSuccess"; initiator: _sender};
+  event e
+end
+
+(* hack... *)
+transition DrandRoundCallBack(drand_round: Uint256, drand_values: (Option String), legendary: (Option Bool))
+  e = {_eventname: "IsOwner"; initiator: _sender};
+  event e
+end
+
+(* should not be necessary here *)
+transition Withdraw(amount: Uint128)
+  IsOwner;
+  msg  = {_tag : ""; _recipient : _sender; _amount : amount};
+  msgs = one_msg msg;
+  send msgs
+end

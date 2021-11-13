@@ -1,0 +1,371 @@
+scilla_version 0
+
+import ListUtils 
+
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+library FlatSale
+  
+let one_msg =
+  fun (m : Message) =>
+    let e = Nil {Message} in
+    Cons {Message} m e
+    
+let two_msgs =
+  fun (msg1 : Message) =>
+  fun (msg2 : Message) =>
+    let msgs_tmp = one_msg msg2 in
+    Cons {Message} msg1 msgs_tmp
+
+(* used for list inclusion test *)
+let equality =
+  fun (a : ByStr20) =>
+  fun (b : ByStr20) =>
+    builtin eq a b
+
+type Listing =
+  | Listing of ByStr20 ByStr20 Uint256 String (Option Uint128)
+
+  
+  
+type Error =
+| NonOwnerCannotCall
+| TokenNotListed  
+| InsufficientFunds
+| NonSellerCannotCall
+| ContractNotPaused
+| ContractPaused
+| ContractNotApproved
+| TokenNotPriced
+| NonconformingNFT
+
+
+(* Error events *)
+let mk_error_event =
+  fun (err : Error) =>
+  let err_code = 
+    match err with
+    | NonOwnerCannotCall        => Int32 -1
+    | TokenNotListed            => Int32 -2
+    | InsufficientFunds         => Int32 -3
+    | NonSellerCannotCall       => Int32 -4
+    | ContractNotPaused         => Int32 -5
+    | ContractPaused            => Int32 -6
+    | ContractNotApproved       => Int32 -7
+    | TokenNotPriced            => Int32 -8
+    | NonconformingNFT          => Int32 -9
+    end in
+    { _exception : "Error"; code : err_code }
+
+
+let false = False
+let true = True
+let zero = Uint128 0
+let one = Uint128 1
+let big_zero = Uint256 0
+let big_one = Uint256 1
+let thousand = Uint128 1000
+let empty_list = Nil {ByStr20}
+
+(***************************************************)
+(*             The contract definition             *)
+(*                                                 *)
+(* This contract enables an NFT token owner to sell*)
+(* their token for a set price to individual       *)
+(*  buyers in a decentralized and                  *)
+(* fair manner.                                    *)
+(*                                                 *)
+(* WARNING: If the owner loses their private key   *)
+(* they will be unable to interact with the smart  *)
+(* contract, for this reason a recovery wallet may *)
+(* be desirable to set in order to prevent losses. *)
+(*                                                 *)
+(***************************************************)
+contract FlatSale
+(
+owner           : ByStr20,
+fee     : Uint128, (*3 digit pct, eg 12% => 120*)
+init_contract   : ByStr20
+)
+
+(*               Field Definitions              *)
+field dex_owner: ByStr20 = owner
+field paused : Bool = false
+field pending_owner : Option ByStr20 = None {ByStr20}
+field approved_contracts: List ByStr20 = Cons {ByStr20} init_contract empty_list
+field listings: Map Uint256 Listing = Emp Uint256 Listing (*(listing_id => Listing)*)
+field total_listings: Uint256 = big_zero
+
+(*                Begin Procedures              *)
+
+procedure ThrowError (err : Error)
+  e = mk_error_event err;
+  throw e
+end
+
+procedure IsOwner()
+  wallet <- dex_owner;
+  is_wallet_owner = builtin eq wallet _sender;
+  match is_wallet_owner with
+  | True => 
+  | False =>
+    err = NonOwnerCannotCall;
+    ThrowError err
+  end
+end
+
+procedure IsPaused()
+  pause_status <- paused;
+  match pause_status with
+  | False => 
+    err = ContractNotPaused;
+    ThrowError err
+  | True =>
+  end
+end
+
+procedure IsNotPaused()
+  pause_status <- paused;
+  match pause_status with
+  | True => 
+    err = ContractPaused;
+    ThrowError err
+  | False =>
+  end
+end
+
+procedure SenderIsAllowedContract()
+  list_mem_addr = @list_mem ByStr20;
+  approved_list <- approved_contracts;
+  approved = list_mem_addr equality _sender approved_list;
+  match approved with
+    | True => 
+    | False =>
+      err = ContractNotApproved;
+      ThrowError err
+  end
+end
+
+procedure TokenSwapIfValid(token_id:Uint256)
+(*Check that the listing exists*)
+  some_listing <- listings[token_id];
+    match some_listing with
+    | Some listed =>
+      match listed with 
+        (*Listing of ByStr20 ByStr20 Uint256 (Option Uint128)*)
+        | Listing token_owner token_contract token cid price =>
+          match price with (*Check it has an existing price*)
+            |Some val =>
+              incremented_payment = builtin add _amount one;
+              sufficient_payment = builtin lt val incremented_payment;
+              match sufficient_payment with (*Check the amount paid is sufficient*)
+                | True =>
+                  accept;                  
+                  (*set the token listing to sold*)
+                  delete listings[token_id];
+
+                  (*send the NFT to the buyer*)
+                  (*transition Transfer(to: ByStr20, token_id: Uint256)*)
+                  msg_to_contract = {_tag : "Transfer"; _recipient : token_contract; _amount : zero; to: _sender; token_id: token};
+                  
+                  (*calculate and send the owners cut*)
+                  (*owners_cut = (1000*price)/(1000+fee)*)
+                  tmp1 = builtin mul thousand val;
+                  tmp2 = builtin add thousand fee;
+                  owner_cut = builtin div tmp1 tmp2;
+                  msg_to_seller = {_tag : "AddFunds"; _recipient : token_owner; _amount : owner_cut};
+                  msgs = two_msgs msg_to_contract msg_to_seller;
+                  send msgs
+                | False =>
+                  err = InsufficientFunds;
+                  ThrowError err
+              end
+            |None => 
+              err = TokenNotPriced;
+              ThrowError err
+          end
+          end
+    | None => 
+      err = TokenNotListed;
+      ThrowError err
+    end
+end
+
+
+
+procedure SetPriceIfSeller(listing_id: Uint256, desired_pay:Uint128)
+(*Check that the listing exists*)
+some_listing <- listings[listing_id];
+match some_listing with
+| Some listed =>
+  match listed with 
+    (*Listing of ByStr20 ByStr20 Uint256 (Option Uint128)*)
+    | Listing token_owner token_contract token cid price =>
+      valid_sender = builtin eq token_owner _sender;
+      match valid_sender with (*Check the sender is the seller*)
+      | True =>
+          tmp = builtin add thousand fee;
+          tmp2 = builtin mul tmp desired_pay; 
+          actual_price = builtin div tmp2 thousand;
+          some_price = Some {Uint128} actual_price;
+          new_listing = Listing token_owner token_contract token cid some_price; (*set the price *)
+          listings[listing_id] := new_listing
+      | False =>
+          err = NonSellerCannotCall;
+          ThrowError err
+      end
+      end
+| None => 
+  err = TokenNotListed;
+  ThrowError err
+end
+end
+
+
+(*                    Begin Transitions                       *)
+
+(*                  DEX operator transitions                  *)
+transition AddFunds()
+  IsNotPaused;
+  accept
+end
+
+transition WithdrawalFunds(amount: Uint128)
+  IsOwner;
+  current_owner <- dex_owner;
+  msg_to_seller = {_tag : "AddFunds"; _recipient : current_owner; _amount : amount};
+  msgs = one_msg msg_to_seller;
+  send msgs
+end
+
+transition AddTokenContract(address: ByStr20)
+  IsOwner;
+  added_approved_contracts = Cons {ByStr20} address empty_list;
+  old_list <- approved_contracts;
+  combine = @list_append ByStr20;
+  new_list = combine added_approved_contracts old_list;
+  approved_contracts := new_list
+end
+
+
+transition Pause()
+  IsNotPaused;
+  IsOwner;
+    paused := true;
+    e = { _eventname : "Contract Paused" };
+    event e
+end
+
+transition Resume()
+  IsPaused;
+  IsOwner;
+    paused := false;
+    e = { _eventname : "Contract Unpaused" };
+    event e
+end
+
+
+
+(*      SAFE OWNERSHIP TRANSFER TRANSITIONS   *)
+
+transition RequestOwnershipTransfer(new_owner: ByStr20)
+  IsOwner;
+  po = Some {ByStr20} new_owner;
+  pending_owner := po
+end
+
+transition ConfirmOwnershipTransfer()
+  optional_po <- pending_owner;
+  match optional_po with
+  | Some pend_owner =>
+      caller_is_new_owner = builtin eq _sender pend_owner;
+      match caller_is_new_owner with
+      | True =>
+          (* transfer ownership *)
+          dex_owner := pend_owner;
+          none = None {ByStr20};
+          pending_owner := none
+      | False => (* the caller is not the new owner, do nothing *)
+      end
+  | None => (* ownership transfer is not in-progress, do nothing *)
+  end
+end
+
+(* overpaying is handled as a donation, a refund will not be issued *)
+transition Buy(listing_id: Uint256)
+  IsNotPaused;
+  TokenSwapIfValid listing_id
+end
+
+
+transition WithdrawalToken(listing_id: Uint256)
+    (*Check that the listing exists*)
+    some_listing <- listings[listing_id];
+    match some_listing with
+    | Some listed =>
+      match listed with 
+        (*Listing of ByStr20 ByStr20 Uint256 (Option Uint128)*)
+        | Listing token_owner token_contract token cid price =>
+          valid_sender = builtin eq token_owner _sender;
+          match valid_sender with (*Check the sender is the seller*)
+          | True =>
+              delete listings[listing_id];
+              msg_to_contract = {_tag : "Transfer"; _recipient : token_contract; _amount : zero; to: _sender; token_id: token};
+              msg = one_msg msg_to_contract;
+                send msg
+          | False =>
+              err = NonSellerCannotCall;
+              ThrowError err
+          end
+        end
+    | None => 
+      err = TokenNotListed;
+      ThrowError err
+    end
+end
+
+(*NOTE: new price will be set in Qa so convert ZIL*)
+(* a first listing must include the fee *)
+transition ConfigurePrice(listing_id: Uint256, desired_pay: Uint128)
+IsNotPaused;
+SetPriceIfSeller listing_id desired_pay
+end
+
+(* msg_to_sender = { _tag : "TransferSuccessCallBack"; _recipient : _sender; _amount : Uint128 0; 
+                    from : _sender; recipient : to; token_id : token_id };*)
+transition  TransferSuccessCallBack(from: ByStr20, recipient: ByStr20, token_id: Uint256)
+end
+
+(* msg_to_recipient = { _tag : "RecipientAcceptTransfer"; _recipient : to; _amount : Uint128 0; 
+                      from : _sender; recipient : to; token_id : token_id };*)
+transition  RecipientAcceptTransfer(from: ByStr20, recipient: ByStr20, token_id: Uint256)
+  IsNotPaused;
+  (*check the sender is an approved token contract*)
+  SenderIsAllowedContract;
+        (*Listing of ByStr20 ByStr20 Uint256 (Option Uint128)*)
+        (* Listing token_owner token_contract token price *)
+  x <- & _sender as ByStr20 with contract field token_uris: Map Uint256 String end;
+  match x with 
+  | Some v => 
+    cid_o <-& v.token_uris[token_id];
+    match cid_o with 
+      | Some cid =>
+        nilprice = None{Uint128};
+        new_listing = Listing from _sender token_id cid nilprice;
+        listing_number <- total_listings;
+        listings[listing_number] := new_listing;
+        new_total_listings = builtin add listing_number big_one;
+        total_listings := new_total_listings
+      | None =>
+        err = NonconformingNFT;
+        ThrowError err
+      end
+  | None => 
+    err = NonconformingNFT;
+    ThrowError err
+  end
+end
+
+

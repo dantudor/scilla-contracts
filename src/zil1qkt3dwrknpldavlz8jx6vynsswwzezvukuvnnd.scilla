@@ -1,0 +1,52 @@
+(***************************************************)
+(*                 Scilla version                  *)
+(***************************************************)
+
+scilla_version 0
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+library Utility
+
+(* error codes library *)
+let forbidden = Uint256 403
+let not_found = Uint256 404
+let success = Uint256 200
+let created = Uint256 201
+let operation_unsuccessful = Uint256 400
+
+contract FetchBlockDetails
+  (owner: ByStr20)
+  
+  field blocks : Map String String = Emp String String
+  
+  transition getBlockById(id: String, old_contract: ByStr20 with contract field blocks: Map String String end)
+    old_contract_blocks <-&  old_contract.blocks;
+    blocks := old_contract_blocks;
+    blockIdExists <- exists blocks[id];
+    
+    match blockIdExists with
+      |False =>
+        e = {_eventname: "block by Id unsuccessful"; status:  not_found; message: "block doesn't exist"};
+        event e
+      |True =>
+        fetchedBlock <- blocks[id];
+        e = {_eventname: "block by Id success"; status: success; message: "fetching block successful"; block: fetchedBlock};
+        event e
+    end
+  end
+  
+  transition getAllBlocks(old_contract: ByStr20 with contract field blocks: Map String String end)
+    accept;
+    old_contract_blocks <-&  old_contract.blocks;
+    allBlocks = builtin to_list old_contract_blocks;
+    e = {_eventname: "fetch all blocks"; allBlocks: allBlocks};
+    event e
+  end
+
+  
+  
+  
+  
+  

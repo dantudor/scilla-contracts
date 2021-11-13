@@ -1,0 +1,336 @@
+
+(* sourceCodeHash=0x41941e9b8f58434c856d7998f5799714aa9db71cd52bef609aaf797506f78fa2 *)
+(* sourceCodeHashKey=hash_0x41941e9b8f58434c856d7998f5799714aa9db71cd52bef609aaf797506f78fa2 *)
+scilla_version 0
+
+import ListUtils
+
+library Reputation
+type Error =
+| NotAuthorized
+| NoStagedAdmin
+| ReputationAlreadyExists
+| ReputationDoesntExists
+| Underflow
+| InvalidCheque
+| InvalidSignature
+type Uint128Pair =
+| Uint128Pair of Uint128 Uint128
+
+let make_error =
+fun (result: Error) =>
+let result_code =
+match result with
+| NotAuthorized => Int32 -1
+| NoStagedAdmin => Int32 -2
+| ReputationAlreadyExists => Int32 -3
+| ReputationDoesntExists => Int32 -4
+| Underflow => Int32 -5
+| InvalidCheque => Int32 -6
+| InvalidSignature => Int32 -7
+end
+in
+{ _exception: "Error"; code: result_code }
+
+let reputation_streak_factor = "reputation_streak_factor"
+let reputation_reward_denominator = ""
+
+let true = True
+let zeroByStr0 = 0x
+let zeroByStr = builtin to_bystr zeroByStr0
+let zeroByStr20 = 0x0000000000000000000000000000000000000000
+let zeroByStr33 = 0x000000000000000000000000000000000000000000000000000000000000000000
+let zero = Uint128 0
+let one = Uint128 1
+let option_value = tfun 'A => fun( default: 'A ) => fun( input: Option 'A) =>
+  match input with
+  | Some v => v
+  | None => default end
+let option_bystr20_value = let f = @option_value ByStr20 in f zeroByStr20
+let option_bystr33_value = let f = @option_value ByStr33 in f zeroByStr33
+let uint128_to_uint256 : Uint128 -> Uint256 =
+  fun (x : Uint128) =>
+    let ox256 = builtin to_uint256 x in
+      match ox256 with
+      | None =>
+        
+        let zero = Uint256 0 in
+        builtin div zero zero
+      | Some x256 => x256
+      end
+
+let muldiv : Uint128 -> Uint128 -> Uint128 -> Uint128 =
+    fun (x : Uint128) =>
+    fun (y : Uint128) =>
+    fun (z : Uint128) =>
+      let x256 = uint128_to_uint256 x in
+      let y256 = uint128_to_uint256 y in
+      let z256 = uint128_to_uint256 z in
+      let x_mul_y256 = builtin mul x256 y256 in
+      let res256 = builtin div x_mul_y256 z256 in
+      let ores128 = builtin to_uint128 res256 in
+      match ores128 with
+      | None =>
+        
+        let max_uint128 = Uint128 340282366920938463463374607431768211455 in
+        let fourtytwo128 = Uint128 42 in
+        builtin mul max_uint128 fourtytwo128
+      | Some res128 =>
+        res128
+      end
+
+
+
+let find_discount: Uint128 -> List Uint128Pair -> Uint128 =
+    fun(score: Uint128) => fun(tiers: List Uint128Pair) =>
+    let return_none_if_score_lt_threshold: Uint128 -> Uint128Pair -> Option Uint128 =
+    fun(acc: Uint128) => fun(tier: Uint128Pair) =>
+        match tier with
+        | Uint128Pair threshold discount =>
+            let lt_threshold = builtin lt score threshold in
+            match lt_threshold with
+            | True => None {Uint128}
+            | False => Some {Uint128} discount
+            end
+        end in
+    let fold = @list_foldl_while Uint128Pair Uint128 in
+    
+    fold return_none_if_score_lt_threshold zero tiers
+
+
+let decimal12_sqrt: Uint128 -> Uint128 =
+    fun(to_root: Uint128) =>
+    let decimal6 = Uint128 1000000 in
+    let sqrt = builtin isqrt to_root in
+    builtin mul sqrt decimal6
+
+let decimal12_tetra_root: Uint128 -> Uint128 =
+    fun(to_root: Uint128) =>
+    let first = decimal12_sqrt to_root in
+    decimal12_sqrt first
+
+type SignableArgs =
+| BU_RES of ByStr20 Uint128 Uint128 String ByStr20
+
+
+type HashableArg =
+| B of ByStr20
+| U of Uint128
+
+let hash_signable_arg: HashableArg -> ByStr32 =
+    fun(s: HashableArg)=> 
+    match s with
+    | B a => builtin sha256hash a
+    | U a => builtin sha256hash a
+    end
+
+let hash_concat: ByStr -> HashableArg -> ByStr =
+    fun(prefix: ByStr) => fun(suffix: HashableArg) =>
+    let bystr_32 = hash_signable_arg suffix in
+    let bystr = builtin to_bystr bystr_32 in
+    builtin concat prefix bystr
+
+let hash_concat_nonce_string_addr: ByStr -> Uint128 -> String -> ByStr20 -> ByStr =
+    fun(prefix: ByStr) => fun(nonce: Uint128) => fun(s: String) => fun(b0: ByStr20) =>
+    let nh = builtin sha256hash nonce in
+    let sh = builtin sha256hash s in
+    let b0h = builtin sha256hash b0 in
+    let c0 = builtin concat nh sh in
+    let suffix = builtin concat c0 b0h in
+    let suffix_bystr = builtin to_bystr suffix in
+    builtin concat prefix suffix_bystr
+
+
+let signable_to_cheque_hash: SignableArgs -> ByStr =
+    fun(args: SignableArgs) =>
+        match args with
+            | BU_RES b0 u nonce s b1 =>
+                let c0 = let a0 = B b0 in hash_concat zeroByStr a0 in
+                let c1 = let a1 = U u  in hash_concat        c0 a1 in
+                hash_concat_nonce_string_addr c1 nonce s b1
+            end
+
+
+
+
+contract Reputation(
+    init_admin_pubkey: ByStr33,
+    init_streak_factor: Uint128
+)
+field admin: ByStr20 = builtin schnorr_get_address init_admin_pubkey
+field admin_pubkey: ByStr33 = init_admin_pubkey
+field staging_admin: Option ByStr33 = None {ByStr33}
+
+field address_to_discount: Map ByStr20 Uint128 = Emp ByStr20 Uint128
+
+field address_to_reputation: Map ByStr20 Uint128 = Emp ByStr20 Uint128
+
+
+field tiers: List Uint128Pair = Nil {Uint128Pair}
+field streak_factor: Uint128 = init_streak_factor
+field temp_reputation_to_add: Uint128 = zero
+
+field void_cheques: Map ByStr32 Bool = Emp ByStr32 Bool
+
+procedure ThrowError(err: Error)
+    e = make_error err;
+    throw e
+end
+procedure DoVoidCheque(cheque_hash: ByStr)
+    hash = builtin sha256hash cheque_hash;
+    void_cheques[hash] := true
+end
+procedure AssertChequeHashValid(cheque_hash: ByStr)
+    hash = builtin sha256hash cheque_hash;
+    cheque_invalid <- exists void_cheques[hash];
+    match cheque_invalid with 
+        | False =>
+        | True => e = InvalidCheque; ThrowError e
+    end
+end
+
+
+
+procedure AssertAddrEquality(ad1: ByStr20, ad2: ByStr20)
+    is_same = builtin eq ad1 ad2;
+    match is_same with
+    | False => e = NotAuthorized; ThrowError e
+    | True =>
+    end 
+end
+procedure IsAdmin()
+    tmp <- admin;
+    AssertAddrEquality tmp _sender
+end
+procedure AssertChequeValidityAndVoidIt(cheque_hash: ByStr, pubkey: ByStr33, signature: ByStr64)
+    AssertChequeHashValid cheque_hash;
+    valid_sig = builtin schnorr_verify pubkey cheque_hash signature;
+    match valid_sig with
+        | True =>
+            
+            DoVoidCheque cheque_hash
+        | False => e = InvalidSignature; ThrowError e
+    end
+end
+
+procedure AssertIsAdminSignatureAndVoidIt(signable: SignableArgs, signature: ByStr64)
+    cheque_hash = signable_to_cheque_hash signable;
+    admin_pub_temp <- admin_pubkey;
+    AssertChequeValidityAndVoidIt cheque_hash admin_pub_temp signature
+end
+transition SetStagedAdmin(staged: ByStr33)
+    IsAdmin;
+    opt_staged = Some {ByStr33} staged;
+    staging_admin := opt_staged
+end
+transition ClaimStagedAdmin()
+    option_staged <- staging_admin;
+    staged_pubkey = option_bystr33_value option_staged;
+    staged = builtin schnorr_get_address staged_pubkey;
+    staged_is_sender = builtin eq _sender staged;
+    match staged_is_sender with
+    | False => e = NotAuthorized; ThrowError e
+    | True => admin := staged; admin_pubkey := staged_pubkey
+    end
+end
+
+
+
+procedure UpdateDiscount(addr: ByStr20, score: Uint128)
+    cur_tiers <- tiers;
+    discount = find_discount score cur_tiers;
+    address_to_discount[addr] := discount
+end
+procedure AssertReputationDoesntExist(addr: ByStr20)
+    if_exists <- exists address_to_reputation[addr];
+    match if_exists with
+    | True => e = ReputationAlreadyExists; ThrowError e
+    | False =>
+    end
+end
+procedure DeleteRep(addr: ByStr20)
+    delete address_to_reputation[addr];
+    delete address_to_discount[addr]
+end
+procedure CreateRep(addr: ByStr20, score: Uint128)
+    address_to_reputation[addr] := score;
+    UpdateDiscount addr score
+end
+transition SetTiers(to_set: List Uint128Pair)
+    IsAdmin;
+    tiers := to_set
+end
+transition CreateReputation(addr: ByStr20, init_score: Uint128, nonce: Uint128, signature: ByStr64)
+    g = "CreateReputation";
+    signable = BU_RES addr init_score nonce g _this_address;
+    AssertIsAdminSignatureAndVoidIt signable signature;
+    AssertReputationDoesntExist addr;
+    CreateRep addr init_score
+end
+transition GiveReputation(addr: ByStr20, to_add: Uint128, nonce: Uint128, signature: ByStr64)
+    g = "GiveReputation";
+    signable = BU_RES addr to_add nonce g _this_address;
+    AssertIsAdminSignatureAndVoidIt signable signature;
+    option_score <- address_to_reputation[addr];
+    match option_score with
+    | None => e = ReputationDoesntExists; ThrowError e
+    | Some score =>
+        added = builtin add score to_add;
+        CreateRep addr added
+    end
+end
+transition SlashReputation(addr: ByStr20, to_slash: Uint128, nonce: Uint128, signature: ByStr64)
+    g = "SlashReputation";
+    signable = BU_RES addr to_slash nonce g _this_address;
+    AssertIsAdminSignatureAndVoidIt signable signature;
+    option_score <- address_to_reputation[addr];
+    match option_score with
+    | None => e = ReputationDoesntExists; ThrowError e
+    | Some score =>
+        too_much = builtin lt score to_slash;
+        match too_much with
+        | True => e = Underflow; ThrowError e
+        | False =>
+            subbed = builtin sub score to_slash;
+            CreateRep addr subbed
+        end
+    end
+end
+transition UpdateStreakFactor(streak: Uint128)
+    IsAdmin;
+    streak_factor := streak
+end
+
+
+
+
+procedure CalculateReputationMint(rewards: Uint128, streak: Uint128)
+    sf <- streak_factor;
+    s_add_sf = builtin add sf streak;
+    tetra_root_rewards = decimal12_tetra_root rewards;
+    to_add = muldiv tetra_root_rewards s_add_sf sf;
+    temp_reputation_to_add := to_add
+end
+transition MintMeReputation(rewards: Uint128, streak: Uint128)
+    option_score <- address_to_reputation[_sender];
+    match option_score with
+    | None => 
+    | Some score =>
+        CalculateReputationMint rewards streak;
+        to_add <- temp_reputation_to_add;
+        temp_reputation_to_add := zero;
+        added = builtin add score to_add;
+        CreateRep _sender added
+    end
+end
+
+transition MoveToNewAddress(new_address: ByStr20)
+    AssertReputationDoesntExist new_address;
+    option_score <- address_to_reputation[_sender];
+    match option_score with
+    | None => e = ReputationDoesntExists; ThrowError e
+    | Some score =>
+        DeleteRep _sender;
+        CreateRep new_address score
+    end
+end

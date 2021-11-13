@@ -1,0 +1,13 @@
+scilla_version 0
+
+import BoolUtils IntUtils PairUtils ListUtils
+
+library LosslessLotteryDepositTransfer 
+
+contract TestRemoteFetch(owner: ByStr20)
+
+transition confirmUserTransferToContract(staking_contract_local : ByStr20 with contract
+    field implementation: ByStr20
+    end)
+end
+

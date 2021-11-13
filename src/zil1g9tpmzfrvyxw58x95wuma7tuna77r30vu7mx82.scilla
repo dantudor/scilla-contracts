@@ -1,0 +1,420 @@
+scilla_version 0
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+
+import ListUtils IntUtils BoolUtils
+
+library FeesPreSaleContractPhaseOne
+
+
+(*****************************************)
+
+let zero = Uint128 0
+let true = True
+let false = False
+let one_msg = 
+  fun (msg : Message) => 
+    let nil_msg = Nil {Message} in
+    Cons {Message} msg nil_msg
+
+
+
+
+(***************************************************)
+(*             The contract definition             *)
+(***************************************************)
+
+
+contract FeesPreSaleContractPhaseOne(
+   contract_owner: ByStr20,
+   fees_token_address : ByStr20,
+   token_price : Uint128 ,
+   max_tokens : Uint128)
+   
+
+(* Mutable fields *)   
+
+field eligiblePreSaleParticipants : Map ByStr20 Uint128 = Emp ByStr20 Uint128
+field preSaleStarted : Bool = False
+field preSaleEnd : Bool = False
+field available_pre_sale_tokens : Uint128 = max_tokens
+field denom : Uint128 = Uint128 10000 
+
+(*V2*)
+field participantsLockedTokens :  Map ByStr20 Uint128 = Emp ByStr20 Uint128
+field coolDownStarted : Bool = False
+field coolDownEnd : Bool = False
+
+(**************************************)
+(*             Procedures             *)
+(**************************************)
+
+(* @dev: To check _sender is owner *)
+(*v*)
+procedure IsOwner()
+accept;
+  is_owner = builtin eq contract_owner _sender;
+  match is_owner with
+  |True => 
+  |False =>
+    err = { _exception : "NotOwner" ; details : "Only Contract Owner can invoke"};
+    throw err
+    end
+end
+
+
+(*@dev: To add preSale elegible addresses *)
+(*v*)
+procedure AddPreSaleEligibleAddresses (preSaleEligibleAddresses : Pair (ByStr20)(Uint128))
+       
+  match preSaleEligibleAddresses with
+  | Pair address amount =>
+    
+    isAddressAvailable <- eligiblePreSaleParticipants[address] ;
+    match isAddressAvailable with
+    |Some val =>
+      newVal = builtin add val amount ;
+      eligiblePreSaleParticipants[address] := newVal
+    |None =>
+      eligiblePreSaleParticipants[address] := amount
+      end  
+  end
+  end
+
+(*v*)
+procedure isPresaleStarted()
+   checkPresalePhase1Started <- preSaleStarted;
+   match checkPresalePhase1Started with
+         | True =>
+           
+         | False =>
+           err = { _exception : "PreSaleNotStarted" ; details : "Presale not yet  started"};
+           throw err
+        end   
+     
+end
+
+(**)
+
+(*v*)
+procedure isPresaleEnd()
+
+checkPresalePhase1End <- preSaleEnd;
+   match checkPresalePhase1End with
+         | True =>
+          err = { _exception : "PreSaleEnded" ; details : "Pre-sale Ended"};
+          throw err
+         | False =>
+    end   
+end
+
+(*v*)
+procedure endSale()
+
+isPresaleStarted;
+isPresaleEnd ;
+preSaleEnd := true;
+(*V2*)
+coolDownStarted := true ;
+(*/V2*)
+ e = {_eventname : "PreSaleEnded"; description: "Pre-sale Ended and Cooldown period started " };
+event e
+end
+
+
+(*v*)
+procedure isTokensavailable(requestedTokens : Uint128)
+availableTokens <- available_pre_sale_tokens ;
+isTokenAvailable = uint128_le requestedTokens availableTokens;
+match isTokenAvailable with
+  |True =>
+  |False =>
+     err = { _exception : "InvalidAmount" ; details : "Requested Tokens is greater than available tokens for presale"};
+     throw err
+end  
+
+end
+(**)
+
+(*V2*)
+(*v*)
+procedure isCooldownEnded()
+
+checkCooldownEnd <- coolDownEnd;
+   match checkCooldownEnd  with
+         | True =>
+          
+         | False =>
+          err = { _exception : "CooldownNotEnded" ; details : "Tokens can be claimed after Cooldown period Ends"};
+          throw err
+    end 
+    
+end
+(*/V2*)
+
+(*V2*)
+(*v*)
+procedure  updateParticipantsLockedTokens(tokens : Uint128)
+
+isUserContributeExists <- participantsLockedTokens[_sender] ;
+    match isUserContributeExists with
+    |Some val =>
+     updatedParticipantsLockedTokens  = builtin add val tokens ;
+      participantsLockedTokens[_sender] := updatedParticipantsLockedTokens
+    |None =>
+      participantsLockedTokens[_sender] := tokens
+      end  
+end
+(*/V2*)
+
+(*V2*)
+(*v*)
+procedure ThrowifPresaleNotEnd()
+
+checkPresaleEnd <- preSaleEnd;
+   match checkPresaleEnd with
+         | True =>
+          
+         | False =>
+          err = { _exception : "PreSaleNotEnded" ; details : "Pre-sale Not Ended"};
+          throw err
+    end  
+end
+
+(*/V2*)
+
+(*V2*)
+(*v*)
+procedure ThrowIfCooldownEnded()
+checkCooldownEnd <- coolDownEnd;
+   match checkCooldownEnd  with
+         | True =>
+          err = { _exception : "CooldownEnded" ; details : " Cooldown period Already Ended"};
+          throw err
+         | False =>
+          
+    end 
+    
+end
+(*/V2*)
+
+(***************************************)
+(*             Transitions             *)
+(***************************************)
+
+
+
+(*v*)
+transition StartPresale()
+IsOwner;
+checkPresalePhase1Started <- preSaleStarted;
+   match checkPresalePhase1Started with
+         | True =>
+           err = { _exception : "PreSaleAlreadyStarted"};
+           throw err
+         | False =>
+          preSaleStarted := true;
+          e = {_eventname : "PreSaleStarted"; description: "PreSale started" };
+          event e
+        end   
+end
+(**)
+
+(*v*)
+transition EndPresale()
+IsOwner;
+endSale
+end
+(**)
+
+
+(* @dev: To add list of Pre-Sale Eligible addresses along with amount                                     *)
+(* @dev: Contract owner input the data in JSON format                                                     *)
+(* @param :List of Pair consisting of a value of type ByStr20 address and a value of type Uint128 amount  *)
+(*v*)
+transition PresaleEligibleParticipants(preSaleParticipants : List( Pair (ByStr20)(Uint128)))               
+    IsOwner ;
+    forall preSaleParticipants AddPreSaleEligibleAddresses
+end
+
+(**)
+(*v*)
+transition BuyFeesTokensFromPreSale(feesTokens : Uint128)
+
+isPresaleStarted;
+isPresaleEnd;
+isAddressAvailable <- eligiblePreSaleParticipants[_sender] ;
+
+match isAddressAvailable with
+    |Some maxToken =>
+     calculated_amount =  builtin mul feesTokens token_price ;
+     tokenDecimals <- denom ;
+     calculated_amount_without_denom = builtin div calculated_amount tokenDecimals ;
+     (* to compare if zil send by user is equal to calculated amount     *)
+     isAmountValid = builtin eq calculated_amount_without_denom _amount ;
+     match isAmountValid with
+       |True =>
+         (*       To check requested token is less than equal to maximum eligible presale token for address  *)
+         isTokenValid = uint128_le feesTokens maxToken ;
+         match isTokenValid with 
+           | True =>
+           (*Check available tokens count*)
+            isTokensavailable feesTokens;
+            accept;
+            
+            (*V2*)
+            updateParticipantsLockedTokens feesTokens ;
+
+            (*/V2*)
+            updatedMaxTokens = builtin sub maxToken feesTokens;
+            eligiblePreSaleParticipants[_sender] := updatedMaxTokens;
+            (*V2*)
+
+           (*/V2*)
+           (*  update available tokens *)
+              available_tokens <- available_pre_sale_tokens ;
+              updated_available_pre_sale_tokens =  builtin sub available_tokens feesTokens;
+              available_pre_sale_tokens := updated_available_pre_sale_tokens;
+              f = {_eventname : "UpdatedAvailableTokens"; availableTokens: updated_available_pre_sale_tokens };
+              event f
+              
+              
+           | False =>
+             err = { _exception : "InvalidAmount" ; details : "Requesting tokens greater than eligible maximum for address "};
+             throw err
+          end 
+          
+       |False=>
+         err = { _exception : "InvalidAmount" };
+         throw err
+       end
+
+    |None =>
+     err = { _exception : "AddressNotAuthorized" ; details : "You are not eligible for Phase One Pre-sale "};
+     throw err
+      end  
+
+end
+(**)
+
+(*V2*)
+(* @dev: To claim TOKENS                                   *)
+(*v*)
+transition Claim()
+
+(*V2*)
+isPresaleStarted ;
+ThrowifPresaleNotEnd;
+isCooldownEnded ;
+(*/V2*)
+
+isAddressAvailable <- participantsLockedTokens[_sender] ;
+match isAddressAvailable with
+    |Some claimToken =>
+     isClaimToken = builtin eq claimToken zero ;
+     match isClaimToken with
+       |False =>
+         msg1 = { _tag : "Transfer"; _recipient : fees_token_address ; _amount : Uint128 0; to : _sender ; amount : claimToken} ;
+         msgs = one_msg msg1;
+         send msgs ;
+         participantsLockedTokens[_sender] := zero;
+         e = {_eventname : "Claimed"; amount: claimToken };
+        event e
+       |True =>
+(*         V2*)
+
+         err = { _exception : "AlreadyClaimed" ; details : "No more tokens to be claimed"};
+         throw err
+(*         /V2*)
+       end
+    |None =>
+     err = { _exception : "NoPresaleParticipation" ; details : "No tokens purchased in presale"};
+     throw err
+      end  
+end
+
+(*/V2*)
+
+(*V2*)
+(*v*)
+transition EndCooldownPeriod()
+IsOwner;
+isPresaleStarted ;
+ThrowifPresaleNotEnd ;
+ThrowIfCooldownEnded ;
+coolDownEnd := true ;
+e = {_eventname : "CoolDownPeriodEnded"; description: "Cooldown Period ended , users can now claim their tokens" };
+event e
+end
+(*/V2*)
+
+
+(* @dev:.To Withdraw token from contract . Only Admin                                 *)
+(*v*)
+transition WithdrawContractTokenBalance(tokensWithdraw : Uint128 , recipient : ByStr20)
+ IsOwner ;
+  msg = { _tag : "Transfer"; _recipient : fees_token_address ; _amount : Uint128 0; to : recipient ; amount : tokensWithdraw} ;
+         msgs = one_msg msg;
+         send msgs ;
+  e = {_eventname : "WithdrawalSuccessful"; description: "Tokens has been successfully withdrawed" };
+        event e ;
+        
+        (*  update available tokens *)
+              available_tokens <- available_pre_sale_tokens ;
+              updated_available_pre_sale_tokens =  builtin sub available_tokens tokensWithdraw;
+              available_pre_sale_tokens := updated_available_pre_sale_tokens;
+              f = {_eventname : "UpdatedAvailableTokens"; availableTokens: updated_available_pre_sale_tokens };
+              event f
+              
+end
+(**)
+
+(*v*)
+transition WithdrawZil(amount : Uint128 , recipient : ByStr20)
+ IsOwner ;
+ accept;
+ msg = {_tag: ""; _recipient: recipient; _amount: amount};  
+ msgs = one_msg msg;
+ send msgs ;
+  f = {_eventname : "ZILWithdrawalSuccessful"; description: "ZIL has been successfully withdrawed" ; zilAmount: amount };
+  event f 
+end
+(**)
+
+
+(*Below Four are callback transition to accept ZRC2 tockens in contract*)
+ transition RecipientAcceptTransfer(
+  
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+end
+
+ transition RecipientAcceptTransferFrom(
+  
+  initiator : ByStr20,
+  sender : ByStr20 ,
+  recipient : ByStr20,
+  amount : Uint128
+)
+end
+
+transition TransferSuccessCallBack(
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+end
+
+                    
+transition TransferFromSuccessCallBack(
+   initiator : ByStr20,
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+end
+

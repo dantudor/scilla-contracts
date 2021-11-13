@@ -1,0 +1,705 @@
+(* Button V2 *)
+
+(***************************************************)
+(*                 Scilla version                  *)
+(***************************************************)
+
+scilla_version 0
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+import IntUtils BoolUtils
+library Button
+
+let one_msg =
+  fun (msg: Message) =>
+  let nil_msg = Nil {Message} in
+  Cons {Message} msg nil_msg
+
+type Winner =
+  | Winner of ByStr20 Uint128 Uint128 BNum 
+
+(* Error exception *)
+type Error =
+  | CodeNotOwner
+  | CodeNotOwnerOrOperator
+  | CodeNotPendingOwner
+  | CodeInvalidOperation
+  | CodeInvalidClaim
+  | CodeInvalidContribute
+  | CodeIsPaused
+  
+let make_error =
+fun (result : Error) =>
+  let result_code = 
+    match result with
+    | CodeNotOwner           => Int32 -1
+    | CodeNotOwnerOrOperator => Int32 -2
+    | CodeNotPendingOwner    => Int32 -3
+    | CodeInvalidOperation   => Int32 -4
+    | CodeInvalidClaim       => Int32 -5
+    | CodeInvalidContribute  => Int32 -6
+    | CodeIsPaused           => Int32 -7
+    end
+  in
+  { _exception : "ButtonError"; code : result_code }
+  
+let zero128 = Uint128 0 
+let zero256 = Uint256 0 
+let one256  = Uint256 1 
+let zil_address = 0x0000000000000000000000000000000000000000
+let win_denom = Uint128 10000
+let k_denom = Uint128 10000
+let true = True
+let false = False
+
+let optional_value =
+  tfun 'A =>
+  fun (default: 'A) =>
+  fun (opt_val: Option 'A) =>
+    match opt_val with
+    | Some v => v
+    | None => default
+    end
+    
+let muldiv =
+  fun (a: Uint128) =>
+  fun (b: Uint128) =>
+  fun (c: Uint128) =>
+    let opt = @optional_value Uint256 in
+    let opt2 = @optional_value Uint128 in
+    let oa = builtin to_uint256 a in let ha = opt zero256 oa in
+    let ob = builtin to_uint256 b in let hb = opt zero256 ob in
+    let oc = builtin to_uint256 c in let hc = opt zero256 oc in
+    let num = builtin mul ha hb in
+    let hv =  builtin div num hc in
+    let ov = builtin to_uint128 hv in
+      opt2 zero128 ov
+      
+contract Button
+(
+  initial_owner: ByStr20,
+  initial_stack_price: Uint128,
+  initial_claim_delay: Uint32,
+  initial_claim_expire: Uint32,
+  initial_win_share: Uint128,
+  token: ByStr20
+)
+
+(* Ownership *)
+field owner : ByStr20         = initial_owner
+field pending_owner : ByStr20 = zil_address
+
+(* 
+  Oracle contract, which can be invoked for each contibution 
+  We can use pushing a button for something useful in the future
+*)
+field oracle : ByStr20         = zil_address
+
+(* Current Stack Sizes *)
+field total_stack:     Uint128 = zero128
+field total_zil_stack: Uint128 = zero128
+
+(* Winner, who can claim in the "claim" bn-window *)
+field current_winner: ByStr20 =  zil_address
+
+(* current bn-window definition [claim, expire) *)
+field claim_block:  BNum       = _creation_block
+field expire_block: BNum       = _creation_block
+
+(* base and current token prices for contibution *)
+field stack_price:         Uint128 = initial_stack_price
+field current_stack_price: Uint128 = initial_stack_price
+
+(* bn-window size definition *)
+field claim_delay:  Uint32 = initial_claim_delay
+field claim_expire: Uint32 = initial_claim_expire
+
+(* share of stack to claim, see win_denom *)
+field win_share: Uint128 = initial_win_share
+
+(* price coefficient and bias *)
+field price_k: Uint128 = k_denom
+field price_b: Uint128 = zero128
+field price_r: Uint128 = zero128
+
+(* winnens log *)
+field winners: Map Uint256 Winner = Emp Uint256 Winner
+field winners_count: Uint256 = zero256
+
+(* operators map *)
+field operators: Map ByStr20 Bool = Emp ByStr20 Bool
+  
+(* affects user related Transitions*)
+field paused: Bool = true
+field pause_on_win: Bool = false
+
+(* allow users to warm up *)
+field user_warmup: Bool = false
+
+(* policy for remaining stack *)
+field keep_stack: Bool = true
+
+(* Emit Errors *)
+procedure ThrowError(err : Error)
+  e = make_error err;
+  throw e
+end
+
+procedure ThrowUnlessSenderIsOwner()
+  current_owner <- owner;
+  is_owner = builtin eq _sender current_owner;
+  match is_owner with
+  | True =>
+  | False =>
+    err = CodeNotOwner;
+    ThrowError err
+  end
+end
+
+procedure ThrowUnlessSenderIsOwnerOrOperator()
+  current_owner <- owner;
+  maybe_operator <- operators[_sender];
+  is_owner = builtin eq _sender current_owner;
+  is_allowed = let opt = @optional_value Bool in
+               let is_operator = opt false maybe_operator in
+               orb is_operator is_owner;
+  match is_allowed with
+  | True =>
+  | False =>
+    err = CodeNotOwnerOrOperator;
+    ThrowError err
+  end
+end
+
+procedure ThrowIfPaused()
+  is_paused <- paused;
+  match is_paused with
+  | False =>
+  | True =>
+    err = CodeIsPaused;
+    ThrowError err
+  end
+end
+
+procedure ThrowUnlessUserCanWarmUp()
+  can_warmup <- user_warmup;
+  match can_warmup with
+  | True =>
+  | False =>
+    err = CodeInvalidOperation;
+    ThrowError err
+  end
+end
+
+procedure SendZil(amount: Uint128, to_address : ByStr20)
+  msg = { _tag : "AddFunds"; _recipient: to_address; _amount: amount };
+  msgs = one_msg msg;
+  send msgs
+end
+
+procedure ReceiveZil(amount: Uint128)
+  needs_refund = uint128_gt _amount amount;
+  accept;
+  match needs_refund with
+  | True =>
+    refund = builtin sub _amount amount;
+    SendZil refund _sender
+  | False => (* do nothing *)
+  end
+end
+
+procedure ReceiveToken(amount: Uint128)
+  msg_to_token = {
+    _tag : "TransferFrom"; _recipient: token; _amount: zero128;
+    from: _sender; to: _this_address; amount: amount
+  };
+  msgs = one_msg msg_to_token;
+  send msgs
+end
+
+procedure SendToken(amount: Uint128, to_address : ByStr20)
+  msg_to_token =  {
+    _tag : "Transfer"; _recipient: token; _amount: zero128;
+    to: to_address; amount: amount
+  };
+  msgs = one_msg msg_to_token;
+  send msgs
+end
+
+procedure BurnToken(amount: Uint128)
+  msg_to_token =  {
+    _tag : "Burn"; _recipient: token; _amount: zero128;
+    burn_account: _this_address; amount: amount
+  };
+  msgs = one_msg msg_to_token;
+  send msgs
+end
+
+procedure WriteWinner(winner: Winner)
+  counter <- winners_count;
+  winners[counter] := winner;
+  new_counter = builtin add counter one256;
+  winners_count := new_counter
+end
+
+procedure CallOracleIfNeed()
+  oracle_address <- oracle;
+  is_invalid = builtin eq oracle_address zil_address;
+  match is_invalid with
+    | True =>
+    | False =>
+      msg_to_oracle =  {
+        _tag : "InvokeOracle"; _recipient: oracle_address; _amount: zero128
+      };
+      msgs = one_msg msg_to_oracle;
+      send msgs
+  end
+end
+
+transition Contribute()
+  ThrowIfPaused;
+  b <- &BLOCKNUMBER;
+  
+  winner <- current_winner;
+  cb     <- claim_block;
+  eb     <- expire_block;
+  (* check if user can contribute in bn-window (0, claim)+[expire, inf) 
+    and with additional condition for current winner not (0, claim) *)
+  is_valid = 
+    let is_winner         = builtin eq _sender winner in
+    let is_before_claim   = builtin blt b cb in
+    let is_before_expire  = builtin blt b eb in
+    let is_after_expire   = negb is_before_expire in
+    let is_time           = orb is_before_claim is_after_expire in
+    let is_win_before     = andb is_winner is_before_claim in
+    let is_not_win_before = negb is_win_before in
+    andb is_time is_not_win_before;
+ 
+  match is_valid with
+  | True =>
+  | False =>
+    err = CodeInvalidContribute;
+    ThrowError err
+  end;
+  
+  current_price <- current_stack_price;
+  ReceiveToken current_price;
+  
+  price_k_local      <- price_k;
+  price_b_local      <- price_b;
+  price_r_local      <- price_r;
+  claim_delay_local  <- claim_delay;
+  claim_expire_local <- claim_expire;
+  old_stack          <- total_stack;
+  
+  new_stack    = builtin add old_stack current_price;
+  total_stack := new_stack;
+  
+  (* Update stack price according to new = k*prev + bias *)
+  new_price = 
+    let price = muldiv current_price price_k_local k_denom in
+    builtin add price price_b_local;
+  need_reset_price = 
+                 let reset = uint128_gt price_r_local zero128 in 
+                 let bigger = uint128_gt new_price price_r_local in
+                 andb reset bigger;
+  match need_reset_price with
+    | False =>
+      current_stack_price := new_price
+    | True =>
+      def_price <- stack_price;
+      current_stack_price := def_price
+  end;
+
+  current_winner      := _sender;
+  
+  (* claim = (block + c); expire = (block + c + e) *)
+  new_cb = builtin badd b      claim_delay_local;
+  new_eb = builtin badd new_cb claim_expire_local;
+  
+  claim_block  := new_cb;
+  expire_block := new_eb;
+  
+  CallOracleIfNeed;
+  
+  e = {_eventname : "Contributed"; user : _sender; 
+       block: b;
+       claim_block: new_cb; expire_block: new_eb;
+       price: current_price; stack_size: new_stack };
+  event e
+end
+
+transition Claim()
+  ThrowIfPaused;
+  b <- &BLOCKNUMBER;
+  
+  winner <- current_winner;
+  cb     <- claim_block;
+  eb     <- expire_block;
+  
+  (* check if winner can claim in bn-window [claim, expire) *)
+  is_valid = 
+    let is_winner        = builtin eq _sender winner in
+    let is_before_claim  = builtin blt b cb in
+    let is_after_claim   = negb is_before_claim in
+    let is_before_expire = builtin blt b eb in
+    let in_time          = andb is_after_claim is_before_expire in
+    andb in_time is_winner;
+    
+  match is_valid with
+  | True =>
+  | False =>
+    err = CodeInvalidClaim;
+    ThrowError err
+  end;
+  
+  keep_stack_local  <- keep_stack;
+  win_share_local   <- win_share;
+  stack_price_local <- stack_price;
+  total_win         <- total_stack;
+  total_zil_win     <- total_zil_stack;
+  
+  (* calculate token and zil winner rewards *)
+  reward     = muldiv total_win     win_share_local win_denom;
+  zil_reward = muldiv total_zil_win win_share_local win_denom;
+  
+  (* remove token and zil winner rewards from stack *)
+  new_stack     = builtin sub total_win reward;
+  new_zil_stack = builtin sub total_zil_win zil_reward;
+  
+  (* clearing game state *)
+  current_winner      := zil_address;
+  claim_block         := b;
+  expire_block        := b;
+  total_zil_stack     := new_zil_stack;
+  current_stack_price := stack_price_local;
+  
+  (* burn tokens or keep it on stack *)
+  match keep_stack_local with
+    | True =>
+      total_stack := new_stack
+    | False =>
+      BurnToken new_stack;
+      total_stack := zero128
+  end;
+  
+  (* send tokens if needed *)
+  needs_send_token = uint128_gt reward zero128;
+  match needs_send_token with
+    | False =>
+    | True =>
+      SendToken reward _sender
+  end;
+  
+  (* send zil if needed *)
+  needs_send_zil = uint128_gt zil_reward zero128;
+  match needs_send_zil with
+    | False =>
+    | True =>
+      SendZil zil_reward _sender
+  end;
+  
+  (* write winner record *)
+  win_record = Winner _sender reward zil_reward b;
+  WriteWinner win_record;
+  
+  pow <- pause_on_win;
+  match pow with
+    | False =>
+    | True =>
+      paused  := true;
+      e = { _eventname: "Paused" };
+      event e
+  end;
+  e = {_eventname : "Claimed"; user : _sender; 
+      block: b; reward: reward; zil_reward: zil_reward };
+  event e
+end
+
+transition WarmUpUser(amount: Uint128)
+  ThrowIfPaused;
+  ThrowUnlessUserCanWarmUp;
+  
+  needs_receive_token = uint128_gt amount zero128;
+  match needs_receive_token with
+    | False =>
+    | True =>
+      ReceiveToken amount
+  end;
+  needs_receive_zil = uint128_gt _amount zero128;
+  match needs_receive_token with
+    | False =>
+    | True =>
+      ReceiveZil _amount
+  end;
+  
+  old_stack     <- total_stack;
+  old_zil_stack <- total_zil_stack;
+  
+  new_stack     = builtin add old_stack amount;
+  new_zil_stack = builtin add old_zil_stack _amount;
+  
+  total_stack     := new_stack;
+  total_zil_stack := new_zil_stack;
+  
+  e = {_eventname : "UserWarmed"; user : _sender;
+    amount: amount;
+    zil_amount: _amount;
+    stack_size: new_stack; 
+    zil_stack_size: new_zil_stack };
+  event e
+end
+
+(*Operator Ops*)
+transition WarmUp(amount: Uint128)
+  ThrowUnlessSenderIsOwnerOrOperator;
+  
+  needs_receive_token = uint128_gt amount zero128;
+  match needs_receive_token with
+    | False =>
+    | True =>
+      ReceiveToken amount
+  end;
+  needs_receive_zil = uint128_gt _amount zero128;
+  match needs_receive_token with
+    | False =>
+    | True =>
+      ReceiveZil _amount
+  end;
+  
+  old_stack     <- total_stack;
+  old_zil_stack <- total_zil_stack;
+  
+  new_stack     = builtin add old_stack amount;
+  new_zil_stack = builtin add old_zil_stack _amount;
+  
+  total_stack     := new_stack;
+  total_zil_stack := new_zil_stack;
+  
+  e = {_eventname : "Warmed"; user : _sender;
+    amount: amount;
+    zil_amount: _amount;
+    stack_size: new_stack; 
+    zil_stack_size: new_zil_stack };
+  event e
+end
+
+transition Start()
+  ThrowUnlessSenderIsOwnerOrOperator;
+  paused  := false;
+  e = { _eventname: "Started" };
+  event e
+end
+
+transition Pause()
+  ThrowUnlessSenderIsOwnerOrOperator;
+  paused  := true;
+  e = { _eventname: "Paused" };
+  event e
+end
+
+transition SetToPauseOnWin()
+  ThrowUnlessSenderIsOwnerOrOperator;
+  pause_on_win  := true;
+  e = { _eventname: "WillPauseOnWin" };
+  event e
+end
+
+transition UnsetPauseOnWin()
+  ThrowUnlessSenderIsOwnerOrOperator;
+  pause_on_win  := false;
+  e = { _eventname: "WillContinueOnWin" };
+  event e
+end
+
+transition SetToBurnStack()
+  ThrowUnlessSenderIsOwnerOrOperator;
+  keep_stack  := false;
+  e = { _eventname: "BurnStackPolicy" };
+  event e
+end
+
+transition SetToKeepStack()
+  ThrowUnlessSenderIsOwnerOrOperator;
+  keep_stack  := true;
+  e = { _eventname: "KeepStackPolicy" };
+  event e
+end
+
+transition AllowUserWarmUp()
+  ThrowUnlessSenderIsOwnerOrOperator;
+  user_warmup  := true;
+  e = { _eventname: "AllowUserWarmUp" };
+  event e
+end
+
+transition DenyUserWarmUp()
+  ThrowUnlessSenderIsOwnerOrOperator;
+  user_warmup  := false;
+  e = { _eventname: "DenyUserWarmUp" };
+  event e
+end
+
+transition UpdateClaimBlocks(delay: Uint32, expire: Uint32)
+  ThrowUnlessSenderIsOwnerOrOperator;
+  claim_delay  := delay;
+  claim_expire := expire;
+  e = { _eventname: "ClaimBlocksUpdated"; 
+    claim_delay: delay; claim_expire:expire };
+  event e
+end
+
+transition UpdateWinShare(share: Uint128)
+  ThrowUnlessSenderIsOwnerOrOperator;
+  is_bad = uint128_gt share win_denom;
+  match is_bad with
+    | False =>
+    | True => 
+      err = CodeInvalidOperation;
+      ThrowError err
+  end;
+  win_share  := share;
+  e = { _eventname: "WinShareUpdated"; 
+    win_share: share };
+  event e
+end
+
+transition UpdateStackPrice(price: Uint128)
+  ThrowUnlessSenderIsOwnerOrOperator;
+  stack_price  := price;
+  current_stack_price := price;
+  e = { _eventname: "StackPriceUpdated"; 
+    stack_price: price };
+  event e
+end
+
+transition UpdateStackPriceMods(k: Uint128, bias: Uint128, reset: Uint128)
+  ThrowUnlessSenderIsOwnerOrOperator;
+  price_k := k;
+  price_b := bias;
+  price_r := reset;
+  e = { _eventname: "StackPriceModsUpdated"; 
+    price_k: k; price_b:bias; price_r: reset};
+  event e
+end
+
+
+(*Owner Ops*)
+transition AddOperator(operator: ByStr20)
+  ThrowUnlessSenderIsOwner;
+  is_operator <- operators[operator];
+  match is_operator with
+  | None =>
+  | Some val => 
+    err = CodeInvalidOperation;
+    ThrowError err
+  end;
+  operators[operator] := true;
+  e = {_eventname : "OperatorAdded"; operator : operator};
+  event e
+end
+
+transition RemoveOperator(operator: ByStr20)
+  ThrowUnlessSenderIsOwner;
+  is_operator <- operators[operator];
+  match is_operator with
+  | Some val => 
+  | None =>
+    err = CodeInvalidOperation;
+    ThrowError err
+  end;
+  delete operators[operator];
+  e = {_eventname : "OperatorRemoved"; operator : operator};
+  event e
+end
+
+transition UpdateOracle(address: ByStr20)
+  ThrowUnlessSenderIsOwner;
+  oracle := address;
+  e = {_eventname : "OracleUpdated"; oracle : address};
+  event e
+end
+
+(* Ownership *)
+transition TransferOwnership(
+  new_owner : ByStr20
+)
+  ThrowUnlessSenderIsOwner;
+  existing_owner <- owner;
+  new_owner_is_existing_owner = builtin eq new_owner existing_owner;
+  match new_owner_is_existing_owner with
+  | True =>
+    err = CodeInvalidOperation;
+    ThrowError err
+  | False =>
+    pending_owner := new_owner
+  end
+end
+
+transition AcceptPendingOwnership()
+  new_owner <- pending_owner;
+  sender_is_pending_owner = builtin eq _sender new_owner;
+  match sender_is_pending_owner with
+  | False =>
+    err = CodeNotPendingOwner;
+    ThrowError err
+  | True =>
+    owner := new_owner;
+    pending_owner := zil_address;
+    e = { _eventname: "OwnershipTransferred"; owner: new_owner };
+    event e
+  end
+end
+
+(***************************************)
+(*             Callbacks               *)
+(***************************************)
+
+
+transition RecipientAcceptTransferFrom(
+  initiator : ByStr20,
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+  is_valid_transfer_to_self =
+    let self_triggered = builtin eq initiator _this_address in
+    let is_transfer_to_self = builtin eq recipient _this_address in
+    andb self_triggered is_transfer_to_self;
+
+  match is_valid_transfer_to_self with
+  | False =>
+    err = CodeInvalidOperation;
+    ThrowError err
+  | True => (* noop *)
+  end
+end
+
+
+transition TransferFromSuccessCallBack(
+  initiator : ByStr20,
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+  (*Do nothing*)
+end
+
+
+transition BurnSuccessCallBack(
+  burner : ByStr20,
+  burn_account : ByStr20,
+  amount : Uint128
+)
+  (*Do nothing*)
+end
+
+transition TransferSuccessCallBack(
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+  (*Do nothing*)
+end

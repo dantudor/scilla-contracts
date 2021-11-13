@@ -1,0 +1,277 @@
+scilla_version 0
+
+import BoolUtils IntUtils
+
+library TokenSale
+let one_msg =
+  fun (m: Message) =>
+    let e = Nil {Message} in
+    Cons {Message} m e
+
+(* checks if a sender is an admin or owner *)
+let is_admin_or_owner =
+    fun (administrators: Map ByStr20 String) =>
+    fun (owner: ByStr20) =>
+    fun (sender: ByStr20) =>
+        let is_admin = builtin contains administrators sender in
+        let is_owner = builtin eq sender owner in
+        let allowed = orb is_admin is_owner in
+        match allowed with
+        | True => True
+        | False => False
+        end
+
+let zero = Uint128 0
+let decimal_factor = Uint128 1000000000000
+let max_exchange_value = Uint128 500000000000
+let min_exchange_value = Uint128 1000000000
+let bool_active = True
+let bool_inactive = False
+
+(* Error events *)
+type Error =
+| CodeNotOwner
+| ContractFrozenFailure
+| ExchangeValueLessThanMinimum
+| ExchangeValueMoreThanMaximum
+| Unauthorized
+
+let make_error =
+  fun (result : Error) =>
+    let result_code = 
+      match result with
+      | CodeNotOwner                  => Int32 -1
+      | ContractFrozenFailure         => Int32 -2
+      | ExchangeValueLessThanMinimum  => Int32 -3
+      | ExchangeValueMoreThanMaximum  => Int32 -4
+      | Unauthorized                  => Int32 -5
+      end
+    in
+    { _exception : "Error"; code : result_code }
+
+contract TokenSale
+(contract_owner: ByStr20,
+ token_address: ByStr20)
+
+field paused : Bool = False
+field exchange_factor : Uint128 = Uint128 0
+
+(* Administrators can only set the rate factor *)
+field administrators : Map ByStr20 String = Emp ByStr20 String
+
+(**************************************)
+(*             Procedures             *)
+(**************************************)
+
+procedure ThrowError(err : Error)
+  e = make_error err;
+  throw e
+end
+
+(* Check if the contract is not paused *)
+procedure IsNotPaused()
+  paused_tmp <- paused;
+  match paused_tmp with
+  | False =>
+  | True  =>
+    err = ContractFrozenFailure;
+    ThrowError err
+  end
+end
+
+(* Check if the owner *)
+procedure IsOwner(address: ByStr20)
+  is_owner = builtin eq contract_owner address;
+  match is_owner with
+  | True =>
+  | False =>
+    err = CodeNotOwner;
+    ThrowError err
+  end
+end
+
+(* Check if part of admin or owner *)
+procedure IsAdminOrOwner(address: ByStr20)
+    admins <- administrators;
+    check_allowed = is_admin_or_owner admins contract_owner address;
+    match check_allowed with
+     | True =>
+     | False =>
+       err = Unauthorized;
+       ThrowError err
+    end
+end
+
+(* Send ZILs to a sepcific addres *)
+procedure SendZIL(to_address : ByStr20, amount : Uint128)
+  msg = { 
+    _tag : "AddFunds"; _recipient: to_address; 
+    _amount: amount
+    
+  };
+  msgs = one_msg msg;
+  send msgs
+end
+
+(* Send Tokens to a sepcific addres *)
+procedure SendTokens(to_address : ByStr20, amount : Uint128)
+  msg_to_token =  {
+    _tag : "Transfer"; _recipient: token_address; _amount: zero;
+    to: to_address; amount: amount
+  };
+  msgs = one_msg msg_to_token;
+  send msgs
+end
+
+(* Check if greater than or equal to the minimum exchange allowed *)
+procedure IsGEMinimum(amount : Uint128)
+  lt_min = uint128_lt amount min_exchange_value;
+  match lt_min with
+  | False =>
+  | True =>
+    err = ExchangeValueLessThanMinimum;
+    ThrowError err
+  end
+end
+
+(* Check if less than or equal to the maximum exchange allowed *)
+procedure IsLEMaximum(amount : Uint128)
+  gt_max = uint128_gt amount max_exchange_value;
+  match gt_max with
+  | False =>
+  | True =>
+    err = ExchangeValueMoreThanMaximum;
+    ThrowError err
+  end
+end
+
+(**************************************)
+(*             Transitions            *)
+(**************************************)
+
+(* Pause the contract - only owner can call *)
+transition Pause()
+  IsOwner _sender;
+  paused := bool_active;
+  e = {
+        _eventname: "PauseSuccess";
+        pausedBy: _sender
+      };
+  event e
+end
+
+(* Unpause the contract - only owner can call *)
+transition UnPause(factor : Uint128)
+  IsOwner _sender;
+  paused := bool_inactive;
+  e = {
+        _eventname: "UnPauseSuccess";
+        unPausedBy: _sender
+      };
+  event e
+end
+
+(* Set the Exchange rate - only owner or an admin can call *)
+transition SetExchangeFactor(ex_factor : Uint128)
+  IsAdminOrOwner _sender;
+  exchange_factor := ex_factor
+end
+
+(* Exchange ZILs for Tokens. _amount is the number of ZILs sent *)
+transition ExchangeExactZilForToken()
+  IsNotPaused;
+
+  factor <- exchange_factor;
+  temp_amount = builtin mul factor _amount;
+  token_amount = builtin div temp_amount decimal_factor;
+  
+  IsGEMinimum token_amount;
+  IsLEMaximum token_amount;
+
+  e = {_eventname: "ExchangeTokens"; token_amount: token_amount; zil_amount: _amount};
+  event e;
+
+  SendTokens _sender token_amount;
+
+  accept
+end
+
+(* Transfer ZILs to the contract *)
+transition TransferZilToContract()
+  IsNotPaused;
+  accept
+end
+
+(* Transfer Tokens to the contract *)
+transition TransferTokenToContract(
+  token_amount : Uint128
+  )
+  msg_to_token = {
+    _tag : "TransferFrom";
+    _recipient: token_address;
+    _amount: zero;
+    from: _sender;
+    to: contract_owner;
+    amount: token_amount
+  };
+  msgs = one_msg msg_to_token;
+  send msgs
+end
+
+(* Add an admin account to the contract *)
+transition AddAdmin (address: ByStr20, id: String)
+    IsOwner _sender;
+    (* Adds address as an admin *)
+    (* id is an identifier to know who the admin is in real-life *)
+    administrators[address] := id; 
+    e = {_eventname: "AddAdminSuccess"; addressAdded: address; id: id};
+    event e
+end
+
+(* Remove an admin account from the contract *)
+transition RemoveAdmin (address: ByStr20)
+    IsOwner _sender;
+    (* Removes address from admin list*)
+    (* id is an identifier to know who the admin is in real-life *)
+    delete administrators[address]; 
+    e = {_eventname: "RemoveAdminSuccess"; address: address};
+    event e
+end
+
+(* Withdraw tokens - only owner can call *)
+transition WithdrawToken(
+  address : ByStr20, 
+  token_amount : Uint128
+  )
+  IsOwner _sender;
+  SendTokens address token_amount
+end
+
+(* Withdraw ZILs - only owner can call *)
+transition WithdrawZIL(
+  address : ByStr20, 
+  zil_amount : Uint128
+  )
+  IsOwner _sender;
+  SendZIL address zil_amount
+end
+
+transition RecipientAcceptTransfer(
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+end
+transition TransferFromSuccessCallBack(
+  initiator : ByStr20,
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+end
+transition TransferSuccessCallBack(
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+end

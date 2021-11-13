@@ -1,0 +1,485 @@
+scilla_version 0
+
+(* Standard Libraries *)
+import IntUtils BoolUtils
+
+
+library UTOLib
+let one_msg = 
+  fun (msg : Message) => 
+  let nil_msg = Nil {Message} in
+  Cons {Message} msg nil_msg
+
+let two_msgs =
+fun (msg1 : Message) =>
+fun (msg2 : Message) =>
+  let msgs_tmp = one_msg msg2 in
+  Cons {Message} msg1 msgs_tmp
+
+let three_msgs =
+fun (msg1 : Message) =>
+fun (msg2 : Message) =>
+fun (msg3 : Message) =>
+  let msgs_tmp = two_msgs msg2 msg3 in
+  Cons {Message} msg1 msgs_tmp
+
+let uint_leq =
+  fun (blk1 : Uint128) =>
+  fun (blk2 : Uint128) =>
+    let bc1 = builtin lt blk1 blk2 in 
+    let bc2 = builtin eq blk1 blk2 in 
+    orb bc1 bc2
+
+let hundred = Uint128 100
+let ten = Uint128 10  
+let zero = Uint128 0
+let tenInt = Uint32 10
+
+let true = True
+let false = False
+
+type Error =
+  | CodeBelowMinimum
+  | CodeWrongAmountSent
+  | CodeMoreThanBalance
+  | CodeContractAlreadyInit
+  | CodeNotProxy
+  | CodeNotOwner
+  | CodeContractPaused
+  | CodeContractNotInit
+  | CodeInsufficientFunds
+  | CodeInsufficientAllowance
+  | CodeIsSender
+  | CodeTokenDoesNotExists
+  | CodeNotWhitelisted
+
+let make_error =
+  fun (result : Error) =>
+  let result_code = 
+  match result with
+  | CodeBelowMinimum            => Int32 -1
+  | CodeWrongAmountSent         => Int32 -2
+  | CodeMoreThanBalance         => Int32 -3
+  | CodeContractAlreadyInit     => Int32 -4
+  | CodeNotProxy                => Int32 -5
+  | CodeNotOwner                => Int32 -6
+  | CodeContractPaused          => Int32 -7
+  | CodeContractNotInit         => Int32 -8
+  | CodeInsufficientFunds       => Int32 -9
+  | CodeInsufficientAllowance   => Int32 -10
+  | CodeIsSender                => Int32 -11
+  | CodeTokenDoesNotExists      => Int32 -12
+  | CodeNotWhitelisted          => Int32 -13
+  end
+  in
+{ _exception : "Error"; code : result_code }
+
+
+let get_val =
+  fun (some_val: Option Uint128) =>
+  match some_val with
+  | Some val => val
+  | None => zero
+  end
+
+
+
+(***************************************************)
+(*             UTO contract definition             *)
+(***************************************************)
+contract UTO
+(
+    contract_owner: ByStr20,
+    decimals: Uint32,
+    init_token_rate: Uint128,
+    rateToOwner: Uint128,
+    init_proxy_address : ByStr20,
+    init_token_address: ByStr20
+)
+(* Mutable fields *)
+field owner_addr: ByStr20 = contract_owner
+field pending_owner : Option ByStr20 = None {ByStr20}
+field proxy_addr : ByStr20 = init_proxy_address
+
+
+field total_supply : Uint128 = Uint128 0
+field balances : Map ByStr20 Uint128 = Emp ByStr20 Uint128
+field allowances: Map ByStr20 (Map ByStr20 Uint128) 
+  = Emp ByStr20 (Map ByStr20 Uint128)
+
+field utoRateToOwner: Uint128 = rateToOwner
+
+
+field token_addr : ByStr20 = init_token_address
+field curr_token_rate : Uint128 = init_token_rate
+
+field contractInit : Bool = False
+field contractPaused : Bool = True
+
+
+(* Procedures *)
+procedure ThrowError(err : Error)
+  e = make_error err;
+  throw e
+end
+
+procedure UpdateTokenRate(tokenHeld: Uint128)
+  circ_supply <- total_supply;
+
+  new_rate = builtin div tokenHeld circ_supply;
+  curr_token_rate := new_rate
+end
+
+procedure isProxy(address: ByStr20)
+  proxyAddress <- proxy_addr;
+  isProxy = builtin eq proxyAddress address;
+  match isProxy with
+    | False =>
+      err = CodeNotProxy;
+      ThrowError err
+    | True =>
+  end
+end
+
+procedure isOwner()
+  owner <- owner_addr;
+  isOwner = builtin eq owner _sender;
+  match isOwner with
+    | True => (*Carry On*)
+    | False =>
+      err = CodeNotOwner;
+      ThrowError err
+  end
+end
+
+procedure isPaused()
+  pause <- contractPaused;
+  match pause with
+    | True =>
+      err = CodeContractPaused;
+      ThrowError err
+    | False =>(*Allow through*)
+  end
+end
+
+procedure AuthorizedMoveIfSufficientBalance(from: ByStr20, to: ByStr20, amount: Uint128)
+  o_from_bal <- balances[from];
+  bal = get_val o_from_bal;
+  can_do = uint128_le amount bal;
+  match can_do with
+  | True =>
+    (* Subtract amount from from and add it to to address *)
+    new_from_bal = builtin sub bal amount;
+    balances[from] := new_from_bal;
+    (* Adds amount to to address *)
+    get_to_bal <- balances[to];
+    new_to_bal = match get_to_bal with
+    | Some bal => builtin add bal amount
+    | None => amount
+    end;
+    balances[to] := new_to_bal
+  | False =>
+    (* Balance not sufficient *)
+    err = CodeInsufficientFunds;
+    ThrowError err
+  end
+end
+
+procedure isInitialized()
+  init <- contractInit;
+  match init with
+    | True=>
+    | False =>
+      err = CodeContractNotInit;
+      ThrowError err
+  end
+end
+
+transition initializeContract()
+  isOwner;
+  init <- contractInit;
+  match init with
+    | False =>
+      token_rate <- curr_token_rate;
+      decimalPlaces = builtin pow tenInt decimals;
+      uintConversion = builtin to_uint128 decimalPlaces;
+      padValue = get_val uintConversion;
+      initRate = builtin div token_rate padValue;
+      curr_token_rate := initRate;
+      contractInit := true
+    | True =>
+      err = CodeContractAlreadyInit;
+      ThrowError err
+  end
+end
+
+(* Transitions *)
+transition Mint(minter_addr : ByStr20, amount: Uint128)
+  proxyAddr <- proxy_addr;
+  isFromProxy = builtin eq proxyAddr _sender;
+  match isFromProxy with
+    | False =>
+      err = CodeTokenDoesNotExists; (*Must Change*)
+      ThrowError err
+    | True =>
+      isPaused;
+      token_rate <- curr_token_rate;
+      tot_supply <- total_supply;
+      owner_address <- owner_addr;
+      rate <- utoRateToOwner;
+      
+      min = builtin mul token_rate hundred;
+      above_tokenRate = uint128_ge amount min;
+      match above_tokenRate with
+        | True =>
+          decimalPlaces = builtin pow tenInt decimals;
+          uintConversion = builtin to_uint128 decimalPlaces;
+          padValue = get_val uintConversion;
+          
+          paddedToken = builtin mul amount padValue;
+          numTokenToGenerate = builtin div paddedToken token_rate;
+          
+          depadToken = builtin div numTokenToGenerate padValue;
+          
+          onePercentOfToken = builtin div depadToken hundred;
+          ownerRate = builtin mul onePercentOfToken rate;
+          minterRate = builtin sub depadToken ownerRate;
+          
+          from_balance <- balances[minter_addr];
+          current_bal = get_val from_balance; (*get_val resolves the option to Uint*)
+          newAmount = builtin add current_bal minterRate;
+          balances[minter_addr] := newAmount;
+          e = {_eventname : "Minted";amount : newAmount; recipient : minter_addr};
+          event e;
+          
+          owner_balance <- balances[owner_address];
+          owner_bal = get_val owner_balance; (*get_val resolves the option to Uint*)
+          ownerNewAmount = builtin add owner_bal ownerRate;
+          balances[owner_address] := ownerNewAmount;
+          e = {_eventname : "Minted"; amount : ownerNewAmount; recipient : owner_address};
+          event e;
+          
+          tot_supply <- total_supply;
+          new_supply = builtin add tot_supply depadToken;
+          total_supply := new_supply;
+          
+          
+          msg = {_tag: "mintCallBack"; _recipient : _sender; _amount: Uint128 0; ownerAddr: owner_address; 
+                buyerAddr: minter_addr; owner_bal: ownerNewAmount; buyer_bal: newAmount; supply: new_supply; tokenAdded: amount};
+          msgs = one_msg msg;
+          send msgs
+        | False =>
+          err = CodeBelowMinimum;
+          ThrowError err
+      end
+  end
+end
+
+
+(*Burn and sell same thing*)
+transition sellTokens(tokens : Uint128, sellerAddress: ByStr20)
+  isProxy _sender;
+  isPaused;
+  
+  tok_addr <- token_addr;
+  token_rate <- curr_token_rate;
+  tot_supply <- total_supply;
+  
+  from_balance <- balances[sellerAddress];
+  current_bal = get_val from_balance;
+  
+  belowBalanceOrEqual = uint128_le tokens current_bal;
+  match belowBalanceOrEqual with
+    | True =>
+      (*Go through*)
+      decimalPlaces = builtin pow tenInt decimals;
+      uintConversion = builtin to_uint128 decimalPlaces;
+      padValue = get_val uintConversion;
+
+      amountToReturn = builtin mul tokens token_rate;
+      
+      newBalance = builtin sub current_bal tokens;
+      balances[sellerAddress] := newBalance;
+      
+      tot_supply <- total_supply;
+      new_supply = builtin sub tot_supply tokens;
+      total_supply := new_supply;
+      
+      e = {_eventname : "Burnt"; amount : tokens; recipient : sellerAddress};
+      event e;
+      (*Add transfer msg to send back token*)
+      
+      msg = {_tag: "sellCallBack"; _recipient : _sender; _amount: Uint128 0; sellerAddr: sellerAddress; seller_bal: newBalance; supply: new_supply; amountToReturn: amountToReturn};
+      msgs = one_msg msg;
+      send msgs
+    | False =>
+      (*Error*)
+      err = CodeMoreThanBalance;
+      ThrowError err
+  end
+end
+
+transition createInvoice(amountPaid: Uint128)
+  isProxy _sender;
+  UpdateTokenRate amountPaid
+end
+
+transition changeProxy(address: ByStr20)
+  isOwner;
+  proxy_addr := address;
+  e_proxyChange = {_eventname : "ProxyChanged"; address: address};
+  event e_proxyChange
+end
+
+
+(*Change Owner of Contract*)
+transition RequestOwnershipTransfer(new_owner : ByStr20)
+  owner <- owner_addr;
+  isOwner = builtin eq _sender owner;
+  match isOwner with
+    | True =>
+      po = Some {ByStr20} new_owner;
+      pending_owner := po
+    | False =>
+      err = CodeNotOwner;
+      ThrowError err
+  end
+end
+
+transition ConfirmOwnershipTransfer()
+  optional_po <- pending_owner;
+  match optional_po with
+  | Some optional_po =>
+      caller_is_new_owner = builtin eq _sender optional_po;
+      match caller_is_new_owner with
+      | True =>
+          (* transfer ownership *)
+          owner_addr := optional_po;
+          none = None {ByStr20};
+          pending_owner := none
+      | False => (* the caller is not the new owner, do nothing*)
+        err = CodeNotOwner;
+        ThrowError err
+      end
+  | None => (* ownership transfer is not in-progress, do nothing *)
+  end
+end
+
+transition pause()
+  isOwner;
+  contractPaused := true
+end
+
+transition UnpauseContract()
+  isOwner;
+  contractPaused := false
+end
+
+transition Transfer(from: ByStr20, to: ByStr20, amount: Uint128)
+  isProxy _sender;
+  AuthorizedMoveIfSufficientBalance from to amount;
+  e = {_eventname : "TransferSuccess"; sender : from; recipient : to; amount : amount};
+  event e;
+  
+  from_bal <- balances[from];
+  get_from_bal = get_val from_bal;
+  
+  to_bal <- balances[to];
+  get_to_bal = get_val to_bal;
+  
+  msg_to_proxy = {_tag : "TransferCallBack"; _recipient : _sender; _amount : zero;
+                  from_addr: from; to_addr: to; from_bal: get_from_bal; to_bal: get_to_bal; amount: amount};
+                  
+  msg_to_recipient = {_tag : "RecipientAcceptTransfer"; _recipient : to; _amount : zero; 
+                      sender : from; recipient : to; amount : amount};
+  msg_to_sender = {_tag : "TransferSuccessCallBack"; _recipient : from; _amount : zero; 
+                  sender : from; recipient : to; amount : amount};
+  msgs = three_msgs msg_to_proxy msg_to_recipient msg_to_sender;
+  send msgs
+end
+
+transition TransferFrom(initiator: ByStr20, from: ByStr20, to: ByStr20, amount: Uint128)
+  isProxy _sender;
+  o_spender_allowed <- allowances[from][initiator];
+  allowed = get_val o_spender_allowed;
+  can_do = uint128_le amount allowed;
+  match can_do with
+  | True =>
+    AuthorizedMoveIfSufficientBalance from to amount;
+    e = {_eventname : "TransferFromSuccess"; initiator : initiator; sender : from; recipient : to; amount : amount};
+    event e;
+    new_allowed = builtin sub allowed amount;
+    allowances[from][initiator] := new_allowed;
+    
+    
+    from_bal <- balances[from];
+    get_from_bal = get_val from_bal;
+    
+    to_bal <- balances[to];
+    get_to_bal = get_val to_bal;
+    
+    (* Prevent sending to a contract address that does not support transfers of token *)
+    msg_to_proxy = {_tag : "TransferFromCallBack"; _recipient : _sender; _amount : zero;
+                  from_addr: from; to_addr: to; from_bal: get_from_bal; to_bal: get_to_bal; amount: amount; spender_addr: initiator; new_allowance: new_allowed};
+    msg_to_recipient = {_tag: "RecipientAcceptTransferFrom"; _recipient : to; _amount: zero; 
+                        initiator: initiator; sender : from; recipient: to; amount: amount};
+    msg_to_sender = {_tag: "TransferFromSuccessCallBack"; _recipient: initiator; _amount: zero; 
+                    initiator: initiator; sender: from; recipient: to; amount: amount};
+    msgs = three_msgs msg_to_proxy msg_to_recipient msg_to_sender;
+    send msgs
+  | False =>
+    err = CodeInsufficientAllowance;
+    ThrowError err
+  end
+end
+
+transition IncreaseAllowance(sender: ByStr20, spender: ByStr20, amount: Uint128)
+  isProxy _sender;
+  isSender = builtin eq sender spender;
+  match isSender with
+    | True =>
+      (*error*)
+      err = CodeIsSender;
+      ThrowError err
+    | False =>
+      some_current_allowance <- allowances[sender][spender];
+      current_allowance = get_val some_current_allowance;
+      new_allowance = builtin add current_allowance amount;
+      allowances[sender][spender] := new_allowance;
+      msg = {_tag: "allowanceCallBack"; _recipient : _sender; _amount: Uint128 0; from_addr: sender; spender_addr: spender; new_allowance: new_allowance};
+      msgs = one_msg msg;
+      send msgs;
+      e = {_eventname : "IncreasedAllowance"; token_owner : sender; spender: spender; new_allowance : new_allowance};
+      event e
+  end
+end
+
+transition DecreaseAllowance(sender: ByStr20, spender: ByStr20, amount: Uint128)
+  isProxy _sender;
+  isSender = builtin eq sender spender;
+  match isSender with
+    | True =>
+      err = CodeIsSender;
+      ThrowError err
+    | False =>
+      some_current_allowance <- allowances[sender][spender];
+      current_allowance = get_val some_current_allowance;
+      new_allowance =
+        let amount_le_allowance = uint128_le amount current_allowance in
+          match amount_le_allowance with
+          | True => builtin sub current_allowance amount
+          | False => zero
+          end;
+      allowances[sender][spender] := new_allowance;
+      msg = {_tag: "allowanceCallBack"; _recipient : _sender; _amount: Uint128 0; from_addr: sender; spender_addr: spender; new_allowance: new_allowance};
+      msgs = one_msg msg;
+      send msgs;
+      e = {_eventname : "DecreasedAllowance"; token_owner : sender; spender: spender; new_allowance : new_allowance};
+      event e
+  end
+end
+
+
+
+
+

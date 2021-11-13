@@ -1,0 +1,379 @@
+scilla_version 0
+
+import BoolUtils IntUtils PairUtils
+
+library Staking
+
+let bystr16_empty_string: ByStr16 = 0x00000000000000000000000000000000
+let bystr20_empty_string: ByStr20 = 0x0000000000000000000000000000000000000000
+let zero = Uint128 0
+let bool_active = True
+let bool_inactive = False
+
+let one_msg =
+  fun (m: Message) =>
+    let e = Nil {Message} in
+    Cons {Message} m e
+
+let bystr_to_bystr16: ByStr -> ByStr16 =
+  fun(str : ByStr) =>
+    let bystr16 = builtin to_bystr16 str in
+      match bystr16 with
+        | Some res => res
+        | None => bystr16_empty_string
+      end
+
+let bystr_to_bystr20: ByStr -> ByStr20 =
+  fun(str : ByStr) =>
+    let bystr20 = builtin to_bystr20 str in
+      match bystr20 with
+        | Some res => res
+        | None => bystr20_empty_string
+      end
+
+let get_bnum =
+  fun (some_val: Option BNum) =>
+  let bnum_zero = BNum 0 in
+  match some_val with
+  | Some val => val
+  | None => bnum_zero
+  end
+
+(* Error events *)
+type Error =
+| CodeNotOwner
+| ContractFrozenFailure
+| Unauthorized
+| DataConversionError
+| ClaimNotAllowedLessThanTenBlocksGap
+| ClaimNotAllowedWalletNotStaked
+| CodeSenderNotMatchAddress
+
+let make_error =
+  fun (result : Error) =>
+    let result_code = 
+      match result with
+      | CodeNotOwner                              => Int32 -1
+      | ContractFrozenFailure                     => Int32 -2
+      | Unauthorized                              => Int32 -3
+      | DataConversionError                       => Int32 -4
+      | ClaimNotAllowedLessThanTenBlocksGap       => Int32 -5
+      | ClaimNotAllowedWalletNotStaked            => Int32 -6
+      | CodeSenderNotMatchAddress                 => Int32 -7
+      end
+    in
+    { _exception : "Error"; code : result_code }
+
+contract Staking
+(contract_owner: ByStr20,
+ token_address: ByStr20,
+ pub_key: ByStr33)
+
+field paused : Bool = False
+field exchange_factor : Uint128 = Uint128 0
+
+field map_wallets : Map ByStr20 BNum = Emp ByStr20 BNum
+
+(**************************************)
+(*             Procedures             *)
+(**************************************)
+
+procedure ThrowError(err : Error)
+  e = make_error err;
+  throw e
+end
+
+(* Check if the contract is not paused *)
+procedure IsNotPaused()
+  paused_tmp <- paused;
+  match paused_tmp with
+  | False =>
+  | True  =>
+    err = ContractFrozenFailure;
+    ThrowError err
+  end
+end
+
+(* Check if the owner *)
+procedure IsOwner(address: ByStr20)
+  is_owner = builtin eq contract_owner address;
+  match is_owner with
+  | True =>
+  | False =>
+    err = CodeNotOwner;
+    ThrowError err
+  end
+end
+
+(* Check if the sender matches the address *)
+procedure IsSenderMatchAddress(address: ByStr20)
+  is_match = builtin eq _sender address;
+  match is_match with
+  | True =>
+  | False =>
+    err = CodeSenderNotMatchAddress;
+    ThrowError err
+  end
+end
+
+(* Send ZILs to a sepcific addres *)
+procedure SendZIL(to_address : ByStr20, amount : Uint128)
+  msg = { 
+    _tag : "AddFunds"; _recipient: to_address; 
+    _amount: amount
+    
+  };
+  msgs = one_msg msg;
+  send msgs
+end
+
+(* Send Tokens to a sepcific addres *)
+procedure SendTokens(to_address : ByStr20, amount : Uint128)
+  msg_to_token =  {
+    _tag : "Transfer"; _recipient: token_address; _amount: zero;
+    to: to_address; amount: amount
+  };
+  msgs = one_msg msg_to_token;
+  send msgs
+end
+
+(* Check if blocknumber sent in signed data is within 5 blocks of the current block *)
+procedure IsBlockNumberWithinRange(blocknum_data : Uint128)
+  current_block <- & BLOCKNUMBER;
+  
+  five_bnum = BNum 5;
+  
+  blocknum_data_bnum = builtin badd five_bnum blocknum_data;
+  bnum_limit = builtin blt current_block blocknum_data_bnum;
+  match bnum_limit with
+  | True =>
+  | False =>
+    err = Unauthorized;
+    ThrowError err
+  end
+end
+
+(* Update the block number for the wallet *)
+procedure UpdateClaimBlockNumberForWallet()
+  current_block <- & BLOCKNUMBER;
+
+  already_exists <- exists map_wallets[_sender];
+  match already_exists with
+  | True =>
+    map_wallets[_sender] := current_block
+  | False =>
+    (* do nothing as the map and its size do not change *)
+  end
+end
+
+(* can the sender claim *)
+procedure IsClaimAllowed()
+  current_block <- & BLOCKNUMBER;
+
+  bnum_in_map <- exists map_wallets[_sender];
+  match bnum_in_map with
+  | False =>
+    err = ClaimNotAllowedWalletNotStaked;
+    ThrowError err
+  | True =>
+    bnum_data <- map_wallets[_sender];
+    bnum_last = get_bnum bnum_data;
+    ten_uint32 = Uint32 10;
+    bnum_block_limit = builtin badd bnum_last ten_uint32;
+
+    bnum_limit = builtin blt current_block bnum_block_limit;
+    match bnum_limit with
+      | True =>
+        err = ClaimNotAllowedLessThanTenBlocksGap;
+        ThrowError err
+      | False =>
+      end
+  end
+end
+
+(**************************************)
+(*             Transitions            *)
+(**************************************)
+
+(* Pause the contract - only owner can call *)
+transition Pause()
+  IsOwner _sender;
+  paused := bool_active;
+  e = {
+        _eventname: "PauseSuccess";
+        pausedBy: _sender
+      };
+  event e
+end
+
+(* Unpause the contract - only owner can call *)
+transition UnPause(factor : Uint128)
+  IsOwner _sender;
+  paused := bool_inactive;
+  e = {
+        _eventname: "UnPauseSuccess";
+        unPausedBy: _sender
+      };
+  event e
+end
+
+(* Transfer ZILs to the contract *)
+transition TransferZilToContract()
+  IsNotPaused;
+  accept
+end
+
+(* Transfer Tokens to the contract *)
+transition TransferTokenToContract(
+  token_amount : Uint128
+  )
+  msg_to_token = {
+    _tag : "TransferFrom";
+    _recipient: token_address;
+    _amount: zero;
+    from: _sender;
+    to: contract_owner;
+    amount: token_amount
+  };
+  msgs = one_msg msg_to_token;
+  send msgs
+end
+
+(* Withdraw tokens - only owner can call *)
+transition WithdrawToken(
+  address : ByStr20, 
+  token_amount : Uint128
+  )
+  IsOwner _sender;
+  SendTokens address token_amount
+end
+
+(* Withdraw ZILs - only owner can call *)
+transition WithdrawZIL(
+  address : ByStr20, 
+  zil_amount : Uint128
+  )
+  IsOwner _sender;
+  SendZIL address zil_amount
+end
+
+(* Register a wallet for staking *)
+transition RegisterWallet()
+  (* no registrations if paused *)
+  IsNotPaused;
+
+  already_exists <- exists map_wallets[_sender];
+  match already_exists with
+  | True =>
+    (* do nothing as the map and its size do not change *)
+  | False =>
+    current_block <- & BLOCKNUMBER;
+    map_wallets[_sender] := current_block
+  end
+end
+
+(* Unregister a wallet for staking *)
+transition UnregisterWalletByOwner(address: ByStr20)
+  IsOwner _sender;
+  already_exists <- exists map_wallets[address];
+  match already_exists with
+  | False =>
+    (* do nothing as the map and its size do not change *)
+  | True =>
+    delete map_wallets[address]
+  end
+end
+
+(* Unregister a wallet for staking *)
+transition UnregisterWallet()
+  already_exists <- exists map_wallets[_sender];
+  match already_exists with
+  | False =>
+    (* do nothing as the map and its size do not change *)
+  | True =>
+    delete map_wallets[_sender]
+  end
+end
+
+transition ClaimRewards(data: ByStr, sigData: ByStr64)
+    (* no claims if paused *)
+    IsNotPaused;
+
+    (* check if claim is allowed at all *)
+    IsClaimAllowed;
+
+    (* verify data against signature *)
+
+    verify_status = builtin ecdsa_verify pub_key data sigData;
+    
+    (* have to split the datablock into block number and hex address *)
+    (* the sender has to match with the hex address *)
+
+    num_0 = Uint32 0;
+    num_16 = Uint32 16;
+    num_20 = Uint32 20;
+    num_36 = Uint32 36;
+
+    block_number_bystr = builtin substr data num_0 num_16;
+    address_bystr = builtin substr data num_16 num_20;
+    reward_amount_bystr = builtin substr data num_36 num_16;
+
+    (* convert bystr address to bystr20 address *)
+    address_bystr20 = bystr_to_bystr20 address_bystr;
+
+    (* the sender address has to match with the signed address *)
+    IsSenderMatchAddress address_bystr20;
+
+    (* convert bystr block_number to uint128 block number *)
+    block_number_bystr16 = bystr_to_bystr16 block_number_bystr;
+    block_number_uint128 = builtin to_uint128 block_number_bystr16;
+    
+    IsBlockNumberWithinRange block_number_uint128;
+
+    (* convert bystr reward_amount to uint128 reward_amount *)
+    reward_amount_bystr16 = bystr_to_bystr16 reward_amount_bystr;
+    reward_amount_uint128 = builtin to_uint128 reward_amount_bystr16;
+    
+    match verify_status with
+    | True =>
+      (* do the claim *)
+      SendZIL _sender reward_amount_uint128;
+
+      (* update the current block number for the wallet *)
+      UpdateClaimBlockNumberForWallet;
+
+      e = { _eventname: "ClaimSuccess"; status : "Claim Successful"; 
+      reward_amount_uint128: reward_amount_uint128;
+      block_number_uint128: block_number_uint128;
+      address_bystr20: address_bystr20 };
+      event e
+      
+    | False =>
+      e = { _eventname: "ClaimFailed"; status : "Claim Failed"; 
+      reward_amount_uint128: reward_amount_uint128;
+      block_number_uint128: block_number_uint128;
+      address_bystr20: address_bystr20 };
+      event e
+    end
+    
+end
+
+transition RecipientAcceptTransfer(
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+end
+transition TransferFromSuccessCallBack(
+  initiator : ByStr20,
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+end
+transition TransferSuccessCallBack(
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+end

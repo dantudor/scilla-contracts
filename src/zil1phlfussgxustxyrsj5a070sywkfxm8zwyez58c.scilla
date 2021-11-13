@@ -1,0 +1,1286 @@
+scilla_version 0
+
+import BoolUtils IntUtils PairUtils ListUtils
+
+library MustPoolPrize
+
+let zero: Uint128 = Uint128 0
+let one: Uint128 = Uint128 1
+let oneInt32: Int32 = Int32 1
+let hundred: Uint128 = Uint128 100
+let tenThousand: Uint128 = Uint128 10000
+let successfulDepositCode: Int32 = Int32 -1
+let contractLockCode: Int32 = Int32 -2
+let contractUnlockCode: Int32 = Int32 -3
+let percentagesAdded: Int32 = Int32 -10
+let trueValue: Bool = True
+let falseValue: Bool = False
+let bNumZero: BNum = BNum 0
+
+type Error =
+| InsufficientBalance
+| UserNotPresent
+| NotOwner
+| NotYieldContract
+| IncorrectPercentage
+| NoWinningAmount
+| NotTransferContract
+| MinStakeError
+| NotThisRecompoundingContract
+| ContractLockedError
+| UserHasBufferedDeposit
+| UserNotPresentRecomYield
+| UserNotPresentPrizeYield
+| UserNotPresentBufferedDeposit
+| NotAutomator
+
+let make_error =
+fun (result : Error) =>
+  let result_code = 
+    match result with
+    | InsufficientBalance => Int32 -1
+    | UserNotPresent => Int32 -2
+    | NotOwner => Int32 -3
+    | NotYieldContract => Int32 -4
+    | IncorrectPercentage => Int32 -5
+    | NoWinningAmount => Int32 -6
+    | NotTransferContract => Int32 -7
+    | MinStakeError => Int32 -8
+    | NotThisRecompoundingContract => Int32 -9
+    | ContractLockedError => Int32 -10
+    | UserHasBufferedDeposit => Int32 -11
+    | UserNotPresentRecomYield => Int32 -12
+    | UserNotPresentPrizeYield => Int32 -13
+    | UserNotPresentBufferedDeposit => Int32 -14
+    | NotAutomator => Int32 -15
+    end
+  in
+  { _exception : "ContractError"; code : result_code }
+
+let getUserAmount = 
+    fun (bs : Map ByStr20 Uint128) =>
+    fun (sender : ByStr20) =>
+        builtin get bs sender
+
+let oneMsg = fun(msg: Message) =>
+    let nil_msg = Nil {Message} in
+    Cons {Message} msg nil_msg
+
+let twoMsgs =
+    fun (msg1 : Message) =>
+    fun (msg2 : Message) =>
+        let msgsTmp = oneMsg msg2 in
+        Cons {Message} msg1 msgsTmp
+
+contract MP(owner: ByStr20, 
+            automator: ByStr20,
+            dev_comm_from_compound_rewards_percent: Uint128,
+            dev_comm_from_prize_rewards_percent: Uint128,
+            gzil_contract_init: ByStr20,
+            staking_contract_proxy_init: ByStr20,
+            staking_contract_init: ByStr20,
+            ssn_addr_init: ByStr20,
+            transfer_contract_init: ByStr20
+            )
+
+field staking_contract_proxy: ByStr20 = staking_contract_proxy_init (*Should be changeable by the user*)
+field staking_contract: ByStr20 = staking_contract_init (*Should be changeable by the user*)
+field gzil_contract: ByStr20 = gzil_contract_init (*Should be changeable by the user*)
+field ssn_addr: ByStr20 = ssn_addr_init (*Should be changeable by the user*)
+field ownership_tranfer_contract: ByStr20 = transfer_contract_init (*Should be changeable by the user*)
+field contract_owner: ByStr20 = owner
+field contract_automator: ByStr20 = automator
+
+field prize_winner: ByStr20 = 0x0000000000000000000000000000000000000000
+field current_user: ByStr20 = 0x0000000000000000000000000000000000000000
+field backers_buffered_deposit : Map ByStr20 (Map BNum Uint128) = Emp ByStr20 (Map BNum Uint128) (*Owner cleans*)
+field backers_realized_deposit: Map ByStr20 Uint128 = Emp ByStr20 Uint128 (*Owner cleans*)
+field backers_p_prize: Map ByStr20 Uint128 = Emp ByStr20 Uint128 (*Owner cleans*)
+field backers_p_interest: Map ByStr20 Uint128 = Emp ByStr20 Uint128 (*Owner cleans*)
+field user_prize_deposit: Map ByStr20 Uint128 = Emp ByStr20 Uint128 (*Reset during conducting prize*)
+field current_yield: Uint128 = Uint128 0
+field total_restaking_amount: Uint128 = Uint128 0
+field total_sum: Uint128 = Uint128 0
+field user_prize_range: Map ByStr20 Uint128 = Emp ByStr20 Uint128 (*Reset during conducting prize*)
+field prize_prize: Uint128 = Uint128 0
+field random_seed: Uint128 = Uint128 0
+field round_number: Uint128 = Uint128 0
+field range_start: Uint128 = Uint128 0
+field user_prizePrize: Map ByStr20 Uint128 = Emp ByStr20 Uint128
+field bnum_required: Uint128 = Uint128 4 (*BNum required for PoolOut. Should be changeable by the Owner.*)
+field matured_amount: Uint128 = Uint128 0
+field user_withdraw_dict: Map ByStr20 (Map BNum Uint128) = Emp ByStr20 (Map BNum Uint128) (* Owner Cleans *)
+field zillion_min_staking_amount:Uint128 = Uint128 0 (*Should be changeable by the Owner*)
+field rsc_min_stake_amount: Uint128 = Uint128 0 (*Should be changeable by the owners*)
+field lock_value: Bool = False
+field prev_yield_block: Uint128 = Uint128 0
+field withdraw_amount: Uint128 =  Uint128 0
+field prize_divisor: Uint128 = Uint128 1
+field dev_commission_from_compound_rewards_percent: Uint128 = dev_comm_from_compound_rewards_percent
+field dev_commission_from_prize_rewards_percent: Uint128 = dev_comm_from_prize_rewards_percent
+
+(* 
+    This procedure is used to throw an error. Standard procedure, should be included in every smart contract.
+ *)
+procedure ThrowError(err : Error)
+  e = make_error err;
+  throw e
+end
+
+(* 
+    Procedure IsRecompoundingContract checks if the initiator is the RSC or not. If not, it throws an error.
+ *)
+procedure IsRecompoundingContract(initiator: ByStr20)
+    isRecompoundingContract = builtin eq initiator _this_address;
+    match isRecompoundingContract with
+    |   True =>
+    |   False =>
+        err = NotThisRecompoundingContract;
+        ThrowError err
+    end
+end
+
+procedure IsAutomator(automator: ByStr20)
+    contractAutomator <- contract_automator;
+    isAutomator = builtin eq automator contractAutomator;
+    match isAutomator with
+        | True =>
+        | False =>
+            err = NotAutomator;
+            ThrowError err
+    end
+end
+
+procedure IsOwner(initiator: ByStr20)
+    contractOwner <- contract_owner;
+    isOwner = builtin eq initiator contractOwner;
+    match isOwner with
+        | True =>
+        | False =>
+            err = NotOwner;
+            ThrowError err
+    end
+end
+
+procedure IsNotLocked()
+    lockValue <- lock_value;
+    match lockValue with
+    | True =>
+        e = ContractLockedError;
+        ThrowError e
+    | False =>
+    end
+end
+
+transition UnlockContract()
+    IsOwner _sender;
+    lock_value := falseValue;
+    e = {
+            _eventname: "Unlocking the Contract";
+            code: contractUnlockCode
+    };
+    event e 
+end
+
+transition LockContract()
+    IsOwner _sender;
+    lock_value := trueValue;
+    e = {
+            _eventname: "Locking the Contract";
+            code: contractLockCode
+    };
+    event e 
+end
+
+transition UpdateCommission(dev_compound_comm: Uint128, dev_prize_comm: Uint128)
+    dev_commission_from_compound_rewards_percent := dev_compound_comm;
+    dev_commission_from_prize_rewards_percent := dev_prize_comm
+end
+(* 
+    This transition is used to update the address of the Intermediate Staking Contract.
+ *)
+transition UpdateTransferContract(new_transfer_contract: ByStr20)
+    IsOwner _sender;
+    IsNotLocked;
+    ownership_tranfer_contract := new_transfer_contract
+end
+
+(* 
+    This transition is used to update the address of the ZSC proxy contract address.
+ *)
+transition UpdateStakingProxyContract(staking_proxy_contract: ByStr20)
+    IsOwner _sender;
+    IsNotLocked;
+    staking_contract_proxy := staking_proxy_contract
+end
+
+(* 
+    This transition is used to update the address of the ZSC contract address.
+ *)
+ transition UpdateStakingContract(staking_contract_new: ByStr20)
+    IsOwner _sender;
+    IsNotLocked;
+    staking_contract := staking_contract_new
+end
+
+(* 
+    This is used to update the minimum staking value in RSC. Ideally we should set it to 100 $Zils.
+ *)
+transition UpdateZillionMinStakeAmount(min_stake_amount: Uint128)
+    IsOwner _sender;
+    IsNotLocked;
+    transferContractLocal <- ownership_tranfer_contract;
+    zillion_min_staking_amount := min_stake_amount
+end
+
+transition UpdateRSCMinStakeAmount(min_stake_amount: Uint128)
+    IsOwner _sender;
+    IsNotLocked;
+    transferContractLocal <- ownership_tranfer_contract;
+    rsc_min_stake_amount := min_stake_amount;
+    msgUpdateMinStakingAmountInIntermediate = {
+        _recipient: transferContractLocal;
+        _tag: "UpdateZillionMinStakeAmount";
+        _amount: zero;
+        min_amount: min_stake_amount
+    };
+    msgsUpdateMinStakingAmountInIntermediate = oneMsg msgUpdateMinStakingAmountInIntermediate;
+    send msgsUpdateMinStakingAmountInIntermediate
+end
+
+transition UpdateBNumRequired(min_bnum_required: Uint128)
+    IsOwner _sender;
+    IsNotLocked;
+    bnum_required := min_bnum_required
+end
+
+transition UpdateOwner(new_owner: ByStr20)
+    IsOwner _sender;
+    contract_owner := new_owner
+end
+
+transition UpdateAutomator(new_automator: ByStr20)
+    IsOwner _sender;
+    contract_automator := new_automator
+end
+
+transition RequestTransferStakeOwnershipToNewAddress(new_address: ByStr20)
+    IsNotLocked;
+    IsOwner _sender;
+    stakingContractProxy <- staking_contract_proxy;
+    msg = {
+        _tag: "RequestDelegatorSwap";
+        _recipient: stakingContractProxy;
+        _amount: zero;
+        new_deleg_addr: new_address
+    };
+    msgs = oneMsg msg;
+    send msgs
+end
+(* 
+    This transition accepts funds from other users or contracts. Ideally we should make sure the RSC accepts amount only from ZSC (not ZSC proxy).
+ *)
+transition AddFunds()
+    IsNotLocked;
+    stakingContract <- staking_contract;
+    isStakingContract = builtin eq _sender stakingContract;
+    match isStakingContract with
+    | False =>
+    | True =>
+        accept
+    end
+end
+
+(*Success Callback function for PoolIn*)
+transition DelegateStakeSuccessCallBack(ssnaddr: ByStr20, amount: Uint128)
+    e = {
+        _eventname: "Funds Added";
+        amount: _amount;
+        code: successfulDepositCode;
+        ssn_addr: ssnaddr
+        };
+    event e
+end
+
+procedure UpdatePercentages(restakePercent: Uint128)
+    prizePercent = builtin sub tenThousand restakePercent;
+    backers_p_prize[_sender] := prizePercent;
+    backers_p_interest[_sender] := restakePercent
+end
+
+procedure CheckValidPercentage(restakePercent: Uint128)
+    isGreaterThanZero = uint128_ge restakePercent zero;
+    isLessThanTenThousand = uint128_le restakePercent tenThousand;
+    match isGreaterThanZero with
+    |   True =>
+        match isLessThanTenThousand with
+        |   True =>
+        |   False =>
+            err = IncorrectPercentage;
+            ThrowError err
+        end
+    |   False =>
+        err = IncorrectPercentage;
+        ThrowError err
+    end
+end
+
+procedure IsMinStakingAmount(amount:Uint128)
+    minStakingAmount <- zillion_min_staking_amount;
+    isInvalidAmount = builtin lt amount minStakingAmount;
+    match isInvalidAmount with
+    | True=>
+        err= MinStakeError;
+        ThrowError err
+    | False=>
+    end
+
+end
+
+(*
+    This transition is used to deposit tokens into the mustpool contract. User calls this transition to deposit the token.
+    The contract then checks if the minimum balance criteria is met. Then it adds the token to the user account.
+*)
+transition PoolIn(restake_percent: Uint128)
+    IsNotLocked;
+    CheckValidPercentage restake_percent;
+    IsMinStakingAmount _amount;
+
+    currentBlockNum <- & BLOCKNUMBER;
+    userBlockBufferedBalance <- backers_buffered_deposit[_sender][currentBlockNum];
+    stakingContractAddress <- staking_contract_proxy;
+    ssnAddr <- ssn_addr;
+
+    accept;
+    msg_stake = {
+        _tag: "DelegateStake";
+        _recipient: stakingContractAddress;
+        _amount: _amount;
+        ssnaddr: ssnAddr
+    };
+    msgs = oneMsg msg_stake;
+    send msgs;
+  
+    match userBlockBufferedBalance with
+    | None =>
+        backers_buffered_deposit[_sender][currentBlockNum] := _amount;
+        UpdatePercentages restake_percent
+
+    | Some amt =>
+        updatedBlockBufferedAmount = builtin add amt _amount;
+        backers_buffered_deposit[_sender][currentBlockNum] := updatedBlockBufferedAmount;
+        UpdatePercentages restake_percent
+    end
+end
+
+transition UpdateRestakeAndPrizePoolContributions(restake_percent: Uint128)
+    IsNotLocked;
+    CheckValidPercentage restake_percent;
+    userRecompoundingContribution <- backers_p_interest[_sender];
+    match userRecompoundingContribution with
+    | None =>
+        err = UserNotPresent;
+        ThrowError err
+    | Some percentage =>
+        prizePoolPercent = builtin sub tenThousand restake_percent;
+        UpdatePercentages restake_percent;
+        e = {
+                _eventname: "Restake and prize pool percentages updated";
+                code: percentagesAdded;
+                user: _sender;
+                reward_restake_percent: restake_percent;
+                reward_prize_pool_percent: prizePoolPercent
+        };
+        event e
+    end
+end
+
+
+procedure DoFetchYield(do_fetch_yield: Int32)
+    doFetchYield = int32_eq do_fetch_yield oneInt32;
+    match doFetchYield with
+    | False =>
+    | True =>
+        msgFetchYield = {
+            _tag: "FetchYield";
+            _recipient: _this_address;
+            _amount: zero
+        };
+        msgsFetchYield = oneMsg msgFetchYield;
+        send msgsFetchYield;
+
+        e1 = {
+            _eventname: "Fetch Yield Executed"
+            };
+        event e1
+    end
+end
+
+procedure DoDistributeYield(do_distribute_yield: Int32)
+    doDistributeYield = int32_eq do_distribute_yield oneInt32;
+    match doDistributeYield with
+    | False =>
+    | True =>
+        msgDistributeYield = {
+            _tag: "DistributeYieldToUsers";
+            _recipient: _this_address;
+            _amount: zero
+        };
+        msgsDistributeYield = oneMsg msgDistributeYield;
+        send msgsDistributeYield;
+        e23 = {
+            _eventname: "Yield Distribution Executed"
+            };
+        event e23
+    end
+end
+
+procedure DoOwnershipTransfer(do_ownership_transfer: Int32)
+    doOwnershipTransfer = int32_eq do_ownership_transfer oneInt32;
+    match doOwnershipTransfer with
+    | False =>
+    | True =>
+        iscAddress <- ownership_tranfer_contract;
+        msgTranferFromIscToRsc = {
+            _recipient: _this_address;
+            _amount: zero;
+            _tag: "StakeTransferFromIntermediate";
+            transfer_contract: iscAddress
+        };
+        msgsTranferFromIscToRsc = oneMsg msgTranferFromIscToRsc;
+        send msgsTranferFromIscToRsc;
+
+        e4 = {
+            _eventname: "Ownership transferred from ISC to RSC"
+            };
+        event e4
+    end
+end
+
+procedure DoWithdrawStake(do_withdraw_stake: Int32)
+    doWithdrawStake = int32_eq do_withdraw_stake oneInt32;
+    match doWithdrawStake with
+    | False =>
+    | True =>
+        msgPoolOutRscStake = {
+            _tag: "PoolOutRscStake";
+            _recipient: _this_address;
+            _amount: zero
+        };
+        msgsPoolOutRscStake = oneMsg msgPoolOutRscStake;
+        send msgsPoolOutRscStake;
+
+        e5 = {
+            _eventname: "Withdraw Stake amount Executed"
+            };
+        event e5
+    end
+end
+
+procedure DoCompoundYield(do_compound_yield: Int32)
+    doCompoundYield = int32_eq do_compound_yield oneInt32;
+    match doCompoundYield with
+    | False =>
+    | True =>
+        msgCompoundYield = {
+            _tag: "CompoundYield";
+            _recipient: _this_address;
+            _amount: zero
+        };
+        msgsCompoundYield = oneMsg msgCompoundYield;
+        send msgsCompoundYield;
+
+        e6 = {
+            _eventname: "compound Yield Executed"
+            };
+        event e6
+    end
+end
+
+procedure DoConductPrize(do_conduct_prize: Int32, rand_seed: Uint128, rand_seed_hex: String, rand_seed_round: Uint128)
+(* statements go below *)
+    doConductPrize = int32_eq do_conduct_prize oneInt32;
+    match doConductPrize with
+    | False =>
+    | True =>
+        msgCompoundYield = {
+            _tag: "ConductPrize";
+            _recipient: _this_address;
+            _amount: zero;
+            rand_seed: rand_seed;
+            rand_seed_hex: rand_seed_hex;
+            rand_seed_round: rand_seed_round
+        };
+        msgsCompoundYield = oneMsg msgCompoundYield;
+        send msgsCompoundYield;
+
+        e7 = {
+            _eventname: "Prize Executed"
+            };
+        event e7
+    end
+end
+
+(* 
+Anything related to fetch and recompounding HAS to follow the below steps chronologically within the same transition.
+
+1. Fetch the yield from \ac{ZSC}.
+2. Distribute the yield to update the user balance.
+3. Add the buffered deposit and yield to the realized deposit of the user.
+4. Transfer ownership of the stake of \ac{ITSC} to \ac{RSC}.
+5. Interact with \ac{ZSC} to invoke the poolout mechanism of \ac{ZSC}.
+6. Recompound the yield.
+7. Conduct the prize. 
+
+Note: Steps 2-5 requires the user to have no buffered deposit and no pending rewards that need to be withdrawn from ZSC.
+*)
+
+transition FetchDistributeAddTransferWithdrawRestakePrize(rand_seed: Uint128, rand_seed_hex: String, rand_seed_round: Uint128, reward_block: Uint128, do_fetch_yield: Int32, do_distribute_yield: Int32, do_ownership_transfer: Int32, 
+                                            do_withdraw_stake: Int32, do_compound_yield: Int32, do_conduct_prize: Int32)
+    IsAutomator _sender;
+    IsNotLocked;
+    prev_yield_block := reward_block;
+
+    (* Step 1: Fetch the Yield *)
+    DoFetchYield do_fetch_yield;
+    (* Step 1 completed *)
+
+    (* Step 2 and 3: Distributing the Yield *)
+    DoDistributeYield do_distribute_yield;    
+    (* Step 2 and 3 completed together *)
+
+    (* Step 4: Transfer the ownership of the stake of \ac{ISC} to \ac{RSC}. *)
+    DoOwnershipTransfer do_ownership_transfer;
+    (* End of step 4 *)
+
+    (* Step 5: Fetch the total withdrawal from the \ac{ZSC} *)
+    DoWithdrawStake do_withdraw_stake;
+    (* End of step 5 *)
+
+    (* Step 6: Recompound the yield obtained *)
+    DoCompoundYield do_compound_yield;
+    (* Step 6 completed *)
+
+    (* Step 7: Conduct the prize for the current Round *)
+    DoConductPrize do_conduct_prize rand_seed rand_seed_hex rand_seed_round
+    (* Step 7 completed *)
+
+end
+
+(* 
+    The transitions WithdrawStakeRewardsSuccessCallBack, CompleteWithdrawalNoUnbondedStakeCallBack, CompleteWithdrawalSuccessCallBack and WithdrawStakeAmtSuccessCallBack are callback transitions for ZSC.
+ *)
+transition WithdrawStakeRewardsSuccessCallBack(ssnaddr: ByStr20, rewards: Uint128)
+    IsNotLocked;
+    current_yield := rewards
+end
+
+ transition CompleteWithdrawalNoUnbondedStakeCallBack(amount: Uint128)
+ end 
+ 
+ transition CompleteWithdrawalSuccessCallBack(amount: Uint128)
+ end
+ 
+ transition WithdrawStakeAmtSuccessCallBack(ssnaddr: ByStr20, amount: Uint128)
+ end
+
+ (* 
+     The FetchYield transition is used to fetch the rewards of the current cycle from ZSC.
+  *)
+transition FetchYield()
+    IsRecompoundingContract _sender;
+    IsNotLocked;
+    stakingContractLocal <- staking_contract_proxy;
+    rNumber <- round_number;
+    currentBalance <- _balance;
+    rNumberNew = builtin add rNumber one;
+    round_number := rNumberNew;
+    ssnAddrLocal <- ssn_addr;
+    msg = {
+        _recipient: stakingContractLocal;
+        _amount: zero;
+        _tag: "WithdrawStakeRewards";
+        ssnaddr: ssnAddrLocal
+    };
+    msgs = oneMsg msg;
+    send msgs
+end
+
+
+(* 
+    This is This is a helper function of the DistributeYieldToUsers transition. It adds the matured buffered deposit to the realized deposit.
+ *)
+procedure AddToRealizedDeposit(user: ByStr20, amount: Uint128)
+(* statements go below *)
+    userCurrentRealizedDeposit <- backers_realized_deposit[user];
+    match userCurrentRealizedDeposit with
+    |   None =>
+            backers_realized_deposit[user] := amount
+    |   Some amt =>
+            newRealizedDeposit = builtin add amt amount;
+            backers_realized_deposit[user] := newRealizedDeposit
+    end
+end
+
+(* 
+    This is This is a helper function of the DistributeYieldToUsers transition.
+    The procedure checks if the buffered deposit has matured given the blockNumber. If it has, the matured amount is added to the realized deposit of the user.
+    TODO: Clean the map backers_buffered_deposit, backers_realized_deposit, backers_p_prize, backers_p_interest and user_prize_deposit.
+ *)
+procedure UpdateRealizedDeposit(block_number_amount: Pair BNum Uint128)
+    currentUser <- current_user;
+    prevYieldBlock <- prev_yield_block;
+    match block_number_amount with
+    |   Pair blockNum amount =>
+        prevYieldBlock = builtin badd bNumZero prevYieldBlock;
+        hasMatured = builtin blt blockNum prevYieldBlock;
+        match hasMatured with
+        |   False =>
+        |   True =>
+            AddToRealizedDeposit currentUser amount;
+            delete backers_buffered_deposit[currentUser][blockNum]
+        end
+    end      
+end
+
+(* 
+    This is This is a helper function of the DistributeYieldToUsers transition.
+    We get the map of each user containing the blockNumber and the corresponding buffered deposit.
+    Now, for each blockNumber and the buffered deposit, we check if the amount has matured or not. If it has matured, we move it to the realized deposit.
+ *)
+procedure ProcessRealizedDeposit(currentUser: ByStr20)
+(* statements go below *)
+    current_user := currentUser; (*Get the id of the current user.*)
+    prevYieldBlock <- prev_yield_block; (*Get the blockNumber where the previous yield was calculated*)
+    userBlockBufferedDeposit <- backers_buffered_deposit[currentUser]; (*Get the buffered deposit of each user corresponding to the blockNumber.*)
+    match userBlockBufferedDeposit with
+    |   Some userBlockBufferedDeposit =>
+        userBlockBufferedDepositListPair = builtin to_list userBlockBufferedDeposit; (*Convert the map of BNum: buffered amount to a list of pairs for further computations.*)
+        forall userBlockBufferedDepositListPair UpdateRealizedDeposit (*Update the matured buffered deposit of each user.*)
+    |   None =>
+    end
+end
+
+(* 
+    This is a helper function of the DistributeYieldToUsers transition. 
+    This procedure is used to move the the buffered deposit of the previous cycle to the realized deposit of the current cycle.
+    This current implementation can be a expensive in terms of gas comsumption, but remove the dependency of using the javascript libraries. This leads to a better decentralization.
+ *)
+procedure UpdateBackersRealizedDeposit()
+(* statements go below *)
+    backersBlockBufferedDeposit <- backers_buffered_deposit; (*Fetch the map of bufffered deposit of users.*)
+    usersBlockBufferedDepositListPair = builtin to_list backersBlockBufferedDeposit; (*Convert the map of buffered deposit to a list of pairs.*)
+
+    (* Convert the list of Pairs to a pair of lists. Ideally we can iterate of the list of pairs, but currently procedures cannot take maps as input. Hence, cannot do that.*)
+    listUnzipByStr20Map = @list_unzip (ByStr20) (Map BNum Uint128);
+    usersBlockBufferedDepositPairList = listUnzipByStr20Map usersBlockBufferedDepositListPair;
+
+    (* The Pair of list contains the list of backers with buffered deposit as the first list. We fetch that and update the realized deposit for each user. *)
+    fstPairByStrMap = @fst (List ByStr20) (List (Map BNum Uint128));
+    bufferedUsers = fstPairByStrMap usersBlockBufferedDepositPairList;
+
+    forall bufferedUsers ProcessRealizedDeposit (*Once we have the list of users with buffered deposit, we move the matured buffered deposit to the realized deposit.*)
+end
+
+(* 
+    This is a helper function of the DistributeYieldToUsers transition. 
+    This procedure computes the total realized amount deposited by the users in the previous cycles.
+ *)
+procedure FindTotalSum(address_value: Pair ByStr20 Uint128)
+(* statements go below *)
+    match address_value with
+    | Pair address value =>
+        previousTotal <- total_sum;
+        currentTotal = builtin add previousTotal value;
+        total_sum := currentTotal
+    end
+end
+
+(* 
+    This is a helper function of the DistributeYieldToUsers transition.
+    The yield that will be recompounded will be in the buffered deposit since when you stake amount, it goes as buffered deposit in the current cycle. Only in the next cycle they are considered for rewards.
+    Adds the recompounded yield of users to their buffered deposit. 
+ *)
+procedure UpdateUserBufferedDeposit(user: ByStr20, amt: Uint128)
+(* statements go below *)
+    currentBlockNum <- & BLOCKNUMBER; (*Fetches the ucrrent block number.*)
+    currentBufferedDeposit <- backers_buffered_deposit[user][currentBlockNum]; (*Fetches the user deposit for the current blocknumber*)
+    match currentBufferedDeposit with
+    | Some amount =>
+    (* If the user has deposited some amount in the current block, then the recompounding amount is added to that amount, else the recompounding yield is set to buffered deposit at the current block. *)
+        new_amount = builtin add amount amt;
+        backers_buffered_deposit[user][currentBlockNum] := new_amount
+    | None =>
+        backers_buffered_deposit[user][currentBlockNum] := amt
+    end
+end
+
+(* 
+    This is a helper function of the DistributeYieldToUsers transition.
+    This computes the contribution of a user towards recompounding.
+    user recompounding value = user yield * precentage of yield to be recompounded/100.
+ *)
+procedure UpdateRecompoundingYield(user: ByStr20, user_yield: Uint128)
+(* statements go below *)
+    compoundingContribution <- backers_p_interest[user]; (*Fetch the percentage of yield the user chooses to recompound.*)
+    match compoundingContribution with
+    | Some percentage =>(*Compute the user restaking amount*)
+        userRestakingAmount = builtin mul percentage user_yield;
+        userRestakingAmount = builtin div userRestakingAmount tenThousand;
+        
+        totalRestakingAmount <- total_restaking_amount; (*Fetch the total restaking amount*)
+        currentRestakingAmount = builtin add totalRestakingAmount userRestakingAmount; (*Add the recompounding value of user to the total_restaking amount.*)
+        total_restaking_amount := currentRestakingAmount; (*Update the total restaking value.*)
+        UpdateUserBufferedDeposit user userRestakingAmount (*Update the buffered deposit of the user.*)
+    | None =>
+        err = UserNotPresentRecomYield;
+        ThrowError err
+    end
+end
+
+(* 
+    This is a helper function of the DistributeYieldToUsers transition.
+    Suppose a user chooses to recompound x% of their yield and y% to the prize pool. 
+    This procedure computes the prize deposit to the prize pool by the user.
+ *)
+procedure UpdatePrizeYield(user: ByStr20, user_yield: Uint128)
+(* statements go below *)
+    prize_contribution <- backers_p_prize[user]; (*Fetch the precentage of yield that the user will put in the prize.*)
+    match prize_contribution with
+    | Some percentage =>
+        (* Computes the yield the user will put into the prize pool. Prize pool deposit=user_yield*y/100 *)
+        user_prize_yield = builtin mul percentage user_yield;
+        user_prize_yield = builtin div user_prize_yield tenThousand;
+
+        user_prize_deposit[user] := user_prize_yield (*Update the user_prize_deposit of the user in the current cycle.*)
+    | None =>
+        err = UserNotPresentPrizeYield;
+        ThrowError err
+    end
+end
+
+(* 
+    This is a helper function of the DistributeYieldToUsers transition.
+    Checks if the total deposit is 0 or not. If it is zero, it sets the total deposit to 1 to avoid division by 0 error.
+ *)
+procedure checkValidTotalSum()
+    totalSum <- total_sum;
+    isTotalSumZero = uint128_eq totalSum zero;
+    match isTotalSumZero with
+    | True =>
+        total_sum := one
+    | False =>
+    end    
+end
+
+(* 
+    This is a helper function of the DistributeYieldToUsers transition.
+ *)
+procedure DistributeYield(address_value: Pair ByStr20 Uint128)
+(* statements go below *)
+    yield <- current_yield; (*Fetches the total yield to be distributed to the users.*)
+    checkValidTotalSum; (*Check if the total sum is 0. If it is 0, the ttotal sum is set to 1 to avoid division by 0 error.*)
+    totalAmount <- total_sum; (*Fetches the total realized deposit of the users in the previous cycle on thich reward is calculated.*)
+    match address_value with
+    |   Pair user amount =>
+            (* Computes the yield a user would receive. This is directly proportional to their realized deposit in the previous cycle. *)
+            userYield = builtin mul yield amount;
+            userYield = builtin div userYield totalAmount;
+
+            UpdateRecompoundingYield user userYield; (*Compute the yield which user will be recompounding.*)
+            UpdatePrizeYield user userYield (*Compute the yield which the user chooses to deposit into the prize pool of the current cycle.*)
+    end
+end
+
+procedure CleanBackersRealizedDepositMap(backer_amount: Pair ByStr20 Uint128)
+(* statements go below *)
+    match backer_amount with
+    | Pair backer amount =>
+      minStakingAmount <- zillion_min_staking_amount;
+      isValidAmount = uint128_le minStakingAmount amount;
+      match isValidAmount with
+      | True =>
+      | False =>
+          delete backers_realized_deposit[backer]
+      end
+    end
+end
+
+(* 
+    This is a helper function of the DistributeYieldToUsers transition.
+    1. The procedure computes the total realized amount deposited by the users.
+    2. Distribute the yield to users in ratio of their realized amount in the previous cycle.
+    3. Move the buffered deposit from the previous cycle to the realized deposit of the current cycle.
+ *)
+procedure CalcUserYield()
+(* statements go below *)
+
+    (* Updated calculations code *)
+    (* Calculate total amount deposited *)
+    total_sum := zero;
+
+    backersRealizedDeposit <- backers_realized_deposit;
+    
+    userRealizedDepositListPair = builtin to_list backersRealizedDeposit;
+
+    forall userRealizedDepositListPair FindTotalSum;
+
+    forall userRealizedDepositListPair DistributeYield;
+
+    UpdateBackersRealizedDeposit;
+
+    userRealizedDepositListPair = builtin to_list backersRealizedDeposit;
+    forall userRealizedDepositListPair CleanBackersRealizedDepositMap
+end
+
+(* 
+    This transition is used to distribute the rewards from the realized deposit between the users. This transition computes the following:
+    1. Check if the contract is locked or not. Check if the _sender is RSC or not. This can only be invoked by the RSC contract.
+    2. Distribute the yield between users in the ratio of their realized deposit in the previous cycle.
+    3. For all users, compute their share of recompounding amount and the prize pool in accordance with the percentages they have set.
+    4. Update the realized deposit of users to include the buffered deposits of previous cycle into the realized deposit of current cycle.
+ *)
+transition DistributeYieldToUsers()
+    IsRecompoundingContract _sender; (*Checks if the _Sender is RSC or not.*)
+    IsNotLocked;(*Checks if the RSC is locked or not.*)
+
+    yield <- current_yield; (*Fetch the current yield received from ZSC.*)
+
+    (* Compute the ownerCut from recompounding. owner_cut = yield*owner_commission_percentage/100 *)
+    devCompoundingCommission <- dev_commission_from_compound_rewards_percent;
+    ownerCut = builtin mul yield devCompoundingCommission; 
+    ownerCut = builtin div ownerCut tenThousand;
+
+    usersYield = builtin sub yield ownerCut; (*Compute the yield to be distributed among the users.*)
+    current_yield := usersYield; (*Update the current yield to the yield to be distributed amount the users.*)
+    total_restaking_amount := zero; (*We set the total restaking amount to zero. This is done since different users contribute different percentage of their yield to the recompounding and the prize.*)
+    CalcUserYield;
+
+    msg = {
+            _recipient: owner;
+            _amount: ownerCut;
+            _tag: "OwnerCutFromCompounding"
+        };
+    msgs = oneMsg msg;
+    send msgs (*Sends the ownerCut amount to the Owner account.*)
+end
+
+procedure IsTransferContract(transferContract: ByStr20)
+(* statements go below *)
+    transferContractLocal <- ownership_tranfer_contract;
+    isTransferContract = builtin eq transferContractLocal transferContract;
+    match isTransferContract with
+    | True =>
+    | False =>
+        err = NotTransferContract;
+        ThrowError err
+    end
+end
+
+
+procedure UpdateBackerDepositFromIntermediate(backer_deposit: Pair ByStr20 Uint128)
+(* statements go below *)
+    match backer_deposit with 
+    | Pair backer amount =>
+        userRealizedDeposit <- backers_realized_deposit[backer];
+        match userRealizedDeposit with
+        |   None =>
+                backers_realized_deposit[backer] := amount
+        |   Some amt =>
+                newAmount = builtin add amount amt;
+                backers_realized_deposit[backer] := newAmount
+        end
+    end
+end
+
+procedure UpdatePercentagesTransfer(user_percent: Pair ByStr20 Uint128)
+    match user_percent with
+    | Pair user percent =>
+        prizePercent = builtin sub tenThousand percent;
+        backers_p_prize[_sender] := prizePercent;
+        backers_p_interest[_sender] := percent
+    end
+end
+
+transition StakeTransferFromIntermediate(transfer_contract : ByStr20 with contract
+    field backers_deposit: Map ByStr20 Uint128,
+    field backers_p_prize: Map ByStr20 Uint128
+    end)
+    IsRecompoundingContract _sender;
+    IsNotLocked;
+    IsTransferContract transfer_contract;
+
+    backerDepositFromIntermediate <- & transfer_contract.backers_deposit;
+    backerDepositFromIntermediate = builtin to_list backerDepositFromIntermediate;
+    backersPrizePercentFromIntermediate <- & transfer_contract.backers_p_prize;
+    backersPrizePercentFromIntermediate = builtin to_list backersPrizePercentFromIntermediate;
+    forall backerDepositFromIntermediate UpdateBackerDepositFromIntermediate;
+    forall backersPrizePercentFromIntermediate UpdatePercentagesTransfer;
+
+    stakingContractProxy <- staking_contract_proxy;
+
+    msgFetchIntermediateContractRewards = {
+        _recipient: transfer_contract;
+        _tag: "FetchYield";
+        _amount: zero
+    };
+    msgsFetchIntermediateContractRewards = oneMsg msgFetchIntermediateContractRewards;
+    send msgsFetchIntermediateContractRewards;
+
+    msgRequestStakeTransferFromIntermediate = {
+        _recipient: transfer_contract;
+        _tag: "OwnershipTransferToRecompoundingContract";
+        _amount: zero
+    };
+    msgsRequestStakeTransferFromIntermediate = oneMsg msgRequestStakeTransferFromIntermediate;
+    send msgsRequestStakeTransferFromIntermediate;
+
+    msgConfirmDelegatorSwap = {
+        _recipient: stakingContractProxy;
+        _amount: zero;
+        _tag: "ConfirmDelegatorSwap";
+        requestor: transfer_contract
+    };
+    msgsConfirmDelegatorSwap = oneMsg msgConfirmDelegatorSwap;
+    send msgsConfirmDelegatorSwap;
+    msg2 = {
+        _recipient: transfer_contract;
+        _amount: zero;
+        _tag: "ConfirmStakeTransferSuccessCallback"
+    };
+    msgs = oneMsg msg2;
+    send msgs
+end
+
+(* 
+    This transition is used to recompound the yield received as rewards from the realized deposit of previous cycle.
+ *)
+transition CompoundYield()
+    IsNotLocked;(*Checks if RSC is locked or not.*)
+    IsRecompoundingContract _sender; (*Only RSC can invoke this function. This checks if RSC is the _sender or not.*)
+
+    restakingAmount <- total_restaking_amount; (*Fetches the total value of rewards needed to be recompounded. This is computed in the DistributeYield transition.**)
+    (* minStakingAmount <- zillion_min_staking_amount; Fetches the minimum amount needed to be staked in the ZSC.*)
+    stakingContractProxy <- staking_contract_proxy; (*Fetches the address of the ZSC proxy contract.*)
+    currentSsnAddr <- ssn_addr; (*Fetches the ssn address used in the current RSC contract.*)
+    
+    IsMinStakingAmount restakingAmount; (*Checks if the recompounding value is atleast the minimum staking amount required by ZSC.*)
+    
+    msg_stake = {
+    _tag: "DelegateStake";
+    _recipient: stakingContractProxy;
+    _amount: restakingAmount;
+    ssnaddr: currentSsnAddr
+    };
+    msgs = oneMsg msg_stake;
+    send msgs (*Sends a message to ZSC proxy contract for delegate the stake rewards back into ZSC.*)
+end
+
+
+(* 
+    This procedure is a helper procedure of the transition ConductPrize.
+    This procedure is used to update the amount a user has won through prize.
+ *)
+procedure UpdateWinnerPrize(winner: ByStr20, prize: Uint128)
+    userExistingPrizePrize <- user_prizePrize[winner]; (*Fetches the amount the winning user has won in the past cycles and has not withdrawan the rewards*)
+    match userExistingPrizePrize with
+    | Some amt =>
+        newAmt = builtin add amt prize; (*If user has pending rewards to be withdrawn, the new prize money is added to the existing balance*)
+        user_prizePrize[winner] := newAmt (*The winning dictionary is updated to the new prize amount.*)
+    | None =>
+        user_prizePrize[winner] := prize (*If the user has no prize prize, then they are assigned the amount they have won in the current round.*)
+    end
+end
+
+(* 
+    This procedure is a helper procedure of the transition ConductPrize.
+    This transition is used to assign the prize winner for the current cycle. 
+    The procedure gets the range end of every user. For the first user where the random_seed lies between the start index and the end index is selected as the winner.
+ *)
+procedure AssignWinner(userEnd: Pair ByStr20 Uint128)
+    match userEnd with
+    | Pair user endIdx =>
+        startIdx <- range_start; (*Fetches the current start index of the range.*)
+        randomSeedLocal <- random_seed; (*Fetches the random_seed of the current cycle.*)
+        isStart = uint128_ge randomSeedLocal startIdx; (*Checks if the random_seed is greater than or equal to the start of the range.*)
+        isEnd = uint128_gt endIdx randomSeedLocal; (*Checks if the end of the range is greater than the random_seed*)
+        range_start := endIdx; (*The range_start is updated to the range end of the current user. This will serve as the range start of the next user.*)
+        match isStart with
+        | True =>
+            match isEnd with
+            | True =>
+                prize_winner := user (*If the random_seed lies in the range of the user, the prize winner is updated to the address of the user.*)
+            | False =>
+            end
+        | False =>
+        end
+    end
+end
+
+(* 
+    This procedure is a helper procedure of the transition ConductPrize.
+    This procedure checks if the prize pool of the current iteration is zero or not.
+    If the prize pool is zero, then the prize_divisor is assigned the value 1, else it is assigned the value equal to the prize pool size.
+    This is important as one might get division error in the transition ConductPrize while computing random_seed%total_prize_deposit.
+ *)
+procedure IsPrizePoolZero(poolSum: Uint128)
+    isZero = builtin eq poolSum zero; (*Bool variable stores True if the prize pool is zero, else it stores False.*)
+    match isZero with
+    | True=>
+      prize_divisor := one; (*If the prize pool is 0, then field prize_deposit in set to 1 to avoid division error.*)
+       e1 = {
+            _eventname: "User prize deposits are zero, probably due to error in distributeYield, where re-compounding happens."
+       };
+      event e1
+    | False=>
+      prize_divisor := poolSum (*If the prize pool is not zero, then the prize_divisor is set to the prize pool sum.*)
+    end
+end
+
+(* 
+    This procedure is a helper procedure of the transition ConductPrize.
+    This procedure is used to caculate the range of each user as illustrated in the example in the comments of the transition ConductPrize.
+ *)
+procedure FindUserRange(userAmount: Pair ByStr20 Uint128)
+    match userAmount with
+    | Pair user amount =>
+      userRangeStart <- range_start; (*Fetches the current value of range_start*)
+      userRangeEnd = builtin add userRangeStart amount; (*Add the prize pool deposit of the user to the range_start to get the range end of the user.*)
+      user_prize_range[user] := userRangeEnd; (*Update the dictionary user_prize_range with the range end of the user.*)
+      range_start := userRangeEnd (*Update the range_start with range_end of the current user. This will serve as the range_start for the next user.*)
+    end
+end
+
+(* 
+    The transition ConductPrize is used by the RSC to conduct the prize for the prize deposits. This transition can be called only by the RSC contract.
+    The method of conducting prize is detailed. Let us supposed there are three users with prize deposits amounts User 1: 100, User 2: 200 and User 3: 300. Also, let us suppose the random seed is 122983.
+    The prize is described as below:
+    1. Each user is assigned a range. User 1: [0, 100), User 2:[100, 300), User 3: [300, 600). It should be noted that the length of the interval of each user is equal to the amount they have contributed towards the prize.
+    2. Compute the total sum deposited. In the example, it is 100+200+300=600.
+    3. Reduce the random seed to the range [0, total amount). In this case, it would be [0, 600). This can be done by calculating updated random seed = random_seed%total_amount.
+    4. Prize winner is the user in whose domain the updated random seed lies.
+*)
+transition ConductPrize(rand_seed: Uint128, rand_seed_hex: String, rand_seed_round: Uint128)
+    IsNotLocked; (*Checks if RSC is locked or not*)
+    IsRecompoundingContract _sender; (*Checks if the _sender is RSC or not.*)
+    
+    userPrizeContribution  <- user_prize_deposit; (*Fetches the current contribution of each user for the prize. This is a map.*)
+    userPrizeDepositListpair = builtin to_list userPrizeContribution; (*Converts the map to a List of Pairs for further computations.*)
+
+    range_start := zero; (*Initializes the start of a range to zero.*)
+    forall userPrizeDepositListpair FindUserRange; (*Computes the range end index of each user.*)
+    sum <- range_start; (*Fetch teh total amount contributed to the prize*)
+    IsPrizePoolZero sum; (*Check if the prize pool is zero or not*)
+    prizeDivisor <- prize_divisor; (*Fetches the divisor for computing random_seed%total_amount*)
+    randSeed = builtin rem rand_seed prizeDivisor; (*Computes the updated random seed.*)
+    random_seed := randSeed; (*Updates the field random_seed with the updated random seed value*)
+    
+    devPrizeCommission <- dev_commission_from_prize_rewards_percent;
+    ownerCut = builtin mul sum devPrizeCommission; (*Computes the owner cut from the prize*)
+    ownerCut = builtin div ownerCut tenThousand; (*Computes the actual amount received by the owner.*)
+    prize = builtin sub sum ownerCut; (*Computes the prize prize for the prize winner.*)
+    prize_prize := prize; (*Updates the global variable of the prize prize.*)
+
+    (* Usesr Prize Range SHOULD be a list of Pairs *)
+    userPrizeRange <- user_prize_range; (*Fetches the map storing the end idx of the range of each user. We can store this in a map since map is stored in chronological order in scilla. For safety, we can convert this to a List of Pairs.*)
+    userRangeList = builtin to_list userPrizeRange; (*Convert the range map to a list of pairs*)
+    
+    range_start := zero; (*Reinitializes the field range_start to zero*)
+    forall userRangeList AssignWinner; (*Procedure AssignWinner used for computing the prize winner.*)
+    roundNumber <- round_number; (*Fethces the current round number.*)
+    prizeWinner <- prize_winner; (*Fetches the current prize winner.*)
+    winningAmount <- prize_prize; (*Fetches the current prize prize.*)
+    UpdateWinnerPrize prizeWinner prize; (*Procedure UpdateWinnerPrize is used to update the amount an user receives through prize.*)
+    msg = {
+        _recipient: owner;
+        _amount: ownerCut;
+        _tag: "PrizeOwnerCut"
+    };
+    msgs = oneMsg msg;
+    send msgs; (*Sends a message to the owner with their prize cut amount*)
+    e = {
+            _eventname: "Prize Draw";
+            roundNumber: roundNumber;
+            roundWinner: prizeWinner;
+            roundPrizeAmount: winningAmount;
+            roundSeedHex: rand_seed_hex;
+            roundSeed: rand_seed;
+            roundSeedRoundNumber: rand_seed_round
+    };
+    event e;
+    empMap = Emp ByStr20 Uint128;
+    user_prize_deposit := empMap; (*Update the prize pool map to empty map for next cycle.*)
+    user_prize_range := empMap (*Update the prize range map to empty map for next cycle.*)
+end
+
+(* 
+    This transition is used to Pay the prize amount to the user. Any user can invoke this transition and get the amount corresponding to their address.
+ *)
+transition PayoutPrizeWinner()
+    IsNotLocked; (*Checks if the contract is locked or not*)
+    senderPrizePrize <- user_prizePrize[_sender]; (*Fetches the prize amount*)
+    match senderPrizePrize with
+    | Some amt =>
+        msg = {
+            _recipient: _sender;
+            _amount: amt;
+            _tag: "PrizePrizeTransfer"
+        };
+        msgs = oneMsg msg;
+        send msgs (*Transfers the prize prize to the user wallet address.*)
+    | None =>
+        err = NoWinningAmount;
+        ThrowError err (*If the user has no reward then RSC throws an error.*)
+    end
+end
+
+
+
+(* 
+    This procedure is used by the transition ClaimMaturedStake for computing the withdrawal amount that has matured for the user.
+    The procedure takes as input a Pair of BNum and Uint128, denoting the Blocknumber and the amount request at the specific blocknumber.
+ *)
+procedure FindUserMaturedAmount(block_amount_pair: Pair BNum Uint128)
+    currentBlocknum <- & BLOCKNUMBER; (*Gets the current block number of the network.*)
+    bnumReq <- bnum_required; (*Number of blocks required for the requested withdrawal amount to mature.*)
+    match block_amount_pair with
+    |   Pair block amount =>
+        blockRequired = builtin badd block bnumReq ; (*Computes the blocknumber required for the amount requested at block to mature.*)
+        isValidBlock = builtin blt blockRequired currentBlocknum; (*Checks if the maturity blocknumber is less than the current blocknumber. If yes, then the amount has matured, else not.*)
+        match isValidBlock with
+        |   True => (*If the amount requested at the block being considered has matured.*)
+            currentMaturedAmount <- matured_amount; (*Fetches the total matured amount of the user.*)
+            newMaturedAmount = builtin add currentMaturedAmount amount; (*Add sthe current matured amount to the total matured amount of the user.*)
+            matured_amount := newMaturedAmount; (*Updates the matured amount of the user to the new total matured amount.*)
+            delete user_withdraw_dict[_sender][block] (*Deletes the user withdrawal request.*)
+        |   False =>
+        end
+    end
+end
+
+(*
+    An user can interact with this transition to claim their matured rewards. The transition works in two steps:
+    1. Fetches the total matured stake of RSC from ZSC.
+    2. Sends the matured stake of the user to their Zil address.    
+*)
+transition ClaimMaturedStake()
+    IsNotLocked;
+    userBlockAmount <- user_withdraw_dict[_sender]; (*Fetches the dictionary of the user with the blockNumber and the withdrawal amount requested at the blockNumber*)
+
+    stakingContractProxy <- staking_contract_proxy; (*Fetches the address of the ZSC proxy contract*)
+    msg = {
+        _tag: "CompleteWithdrawal";
+        _amount: zero;
+        _recipient: stakingContractProxy
+    };
+    msgs = oneMsg msg;
+    send msgs; (*Sends a message to the ZSC for withdrawing the matured stake amount of RSC.*)
+
+    match userBlockAmount with
+    |   None =>
+        err = UserNotPresent;
+        ThrowError err (*Checks if the user has any pending withdrawal amount or not.*)
+
+    |   Some userBlockAmount =>
+        matured_amount := zero; (*Sets the matured amount of the user to zero.*)
+        blocAmountListPair = builtin to_list userBlockAmount; (*Converts the dictionary of BNum: Amount to a list pair.*)
+        forall blocAmountListPair FindUserMaturedAmount; (*We computes the amount that has matured for the user using their withdrawal dict listPair. This procedure updates the mutable matured_amount. After this matured_amount stores the amount matured for the user.*)
+        userMaturedAmount <- matured_amount; (*Fetches the amount that has matured for the user.*)
+        
+        msg2 = {
+            _tag: "UserWithdrawal";
+            _amount: userMaturedAmount;
+            _recipient: _sender
+        };
+        msgs2 = oneMsg msg2;
+        send msgs2 (*Sends the matured amount to the address of the user.*)
+    end
+end
+
+(* 
+    The procedures UpdateWithdrawalAmount, IsCompleteWithdrawal, IsValidOrCompleteWithdrawal are supporting procedures of PoolOut.
+ *)
+procedure UpdateWithdrawalAmount(amt: Uint128, user_amount: Option Uint128, currentBlk: BNum)
+    withdrawAmt = match user_amount with
+    | Some v => builtin add v amt
+    | None => amt
+    end;
+    user_withdraw_dict[_sender][currentBlk] := withdrawAmt
+end
+
+
+procedure IsCompleteWithdrawal(flag: Bool, remaining_amount: Uint128)
+    match flag with
+    |   True =>
+    |   False =>
+        IsMinStakingAmount remaining_amount
+    end
+end
+
+procedure IsValidOrCompleteWithdrawal(remaining_amount: Uint128)
+    completeWithdrawal = builtin eq remaining_amount zero;
+    IsCompleteWithdrawal completeWithdrawal remaining_amount
+end
+
+(* The procedure IsValidAmount checks if the amount requested for withdrawal is valid or not.
+    1. It checks if the amount requested is less than the current realized deposit of the user.
+    2. Checks if it is a complete withdrawal of the stake.
+    3. If it is not a complete withdrawal, it checks if the remaining amount meets the minimum staking amount criteria.
+*)
+procedure IsValidAmount(amount: Uint128, available_balance: Uint128)
+(* statements go below *)
+    isValid = uint128_le amount available_balance; (*Flag that stores if the withdrawal amount requested is less than the available balance*)
+    match isValid with
+    |   False =>
+            err = InsufficientBalance; (*Throws an error if the requested amount is more than the available balance.*)
+            ThrowError err
+    |   True =>
+            updatedRealizedDeposit = builtin sub available_balance amount; (*Computes the new realized deposit of the user.*)
+            IsValidOrCompleteWithdrawal updatedRealizedDeposit; (*Checks if the amount after withdrawal is zero or the minimum staking amount.*)
+            backers_realized_deposit[_sender] := updatedRealizedDeposit (*Updates the realized deposit of the user.*)
+    end
+end
+
+transition PoolOut(amount: Uint128)
+    IsNotLocked; (* Checks if the contract is locked or not*)
+    currentStakedAmount <- backers_realized_deposit[_sender]; (* Fetches the realized deposit of the user *)
+    currentBlock <- & BLOCKNUMBER; (*Fetches the current Blocknumber*)
+
+    currentTotalWithdrawAmountForContract <- withdraw_amount; (* Fetches the total amount RSC needs to withdraw from ZSC in the next cycle. *)
+    
+    match currentStakedAmount with
+    |   Some currentStakedAmount =>
+            IsValidAmount amount currentStakedAmount; (* Checks if the amount to be withdrawan is a valid amount or not *)
+            userAmount <- user_withdraw_dict[_sender][currentBlock]; (* Fetches the amount user wants to withdraw at the current block *)
+            UpdateWithdrawalAmount amount userAmount currentBlock; (* Updates the withdrawal amount of the user in the current block*)
+            updatedTotalWithdrawAmountForContract = builtin add currentTotalWithdrawAmountForContract amount; 
+            withdraw_amount := updatedTotalWithdrawAmountForContract (* Updates the total amount to be withdrawn by the RSC from ZSC in the next cycle*)
+    |   None =>
+            err = UserNotPresent; (*Throws an error is the user has no realized deposit.*)
+            ThrowError err
+    end
+end
+
+(* 
+    This transition is used to send a request to ZSC for withdrawaing stake of RSC contract. 
+    The withdrawal amount is equal to the total withdrawal amount requested by the users in the previous cycle.
+ *)
+transition PoolOutRscStake()
+    IsNotLocked; (*Checks if the RSC is locked or not.*)
+    IsRecompoundingContract _sender; (*Check if the sender is the current RSC or not.*)
+    
+    ssnAddr <- ssn_addr; (*fetches the ssn of the RSC*)
+    totalWithdrawalAmount <- withdraw_amount; (*Fetches the total withdrawal amount requested by the users in the previous cycle.*)
+    stakingContractLocal <- staking_contract_proxy; (*Fetches the address of ZSC proxy contract.*)
+    msg = {
+        _tag: "WithdrawStakeAmt";
+        _recipient: stakingContractLocal;
+        _amount: zero;
+        amt: totalWithdrawalAmount;
+        ssnaddr: ssnAddr
+    };
+    msgs = oneMsg msg;
+    send msgs; (*Sends a message to ZSC proxy contract to initial stake withdrawal*)
+
+    withdraw_amount := zero (*Updates the withdrawal amount of users to zero*)
+end

@@ -1,0 +1,160 @@
+scilla_version 0
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+import BoolUtils ListUtils IntUtils
+
+library NFTHOLD
+
+let one_msg = 
+  fun (msg : Message) => 
+  let nil_msg = Nil {Message} in
+    Cons {Message} msg nil_msg
+    
+let two_msgs =
+  fun (msg1 : Message) =>
+  fun (msg2 : Message) =>
+    let msgs_tmp = one_msg msg2 in
+      Cons {Message} msg1 msgs_tmp
+
+let notAuctionContract = Int32 -1
+
+
+
+contract NFTHOLD
+(contract_owner : ByStr20)
+
+field auction_contract : ByStr20 = 0x0000000000000000000000000000000000000000
+field auctionDuration: Uint128 = Uint128 2600
+
+procedure IsContractOwner()
+  is_owner = builtin eq _sender contract_owner;
+  match is_owner with
+  | True => 
+  | False =>
+    e = { _exception : "Not the owner"; code: notAuctionContract };
+      throw e
+  end
+end
+
+procedure TransferNFTtoOwner (contract_address: ByStr20, token_id: Uint256, owner: ByStr20)
+  transfered = {
+    _tag: "Transfer";
+    _recipient: contract_address;
+    _amount: Uint128 0;
+    to: owner;
+    token_id: token_id
+  };
+  msgs = one_msg transfered;
+  send msgs
+end
+
+procedure IsAuctionContract()
+ac <- auction_contract;
+  is_auction_contract = builtin eq _sender ac;
+  match is_auction_contract with
+  | True => 
+  | False =>
+    e = { _exception : "Not Auction Contract"; code: notAuctionContract };
+      throw e
+  end
+end
+
+procedure TransferNFTtoDEX (contract_address: ByStr20, token_id: Uint256)
+  transfered = {
+    _tag: "TransferFrom";
+    _recipient: contract_address;
+    _amount: Uint128 0;
+    to: _this_address;
+    token_id: token_id
+  };
+  msgs = one_msg transfered;
+  send msgs
+end
+
+
+
+transition RecipientAcceptTransferFrom(from: ByStr20, recipient: ByStr20, token_id: Uint256)
+end
+
+transition TransferSuccessCallBack(from: ByStr20, recipient: ByStr20, token_id: Uint256)
+end
+
+
+
+(*Auction contract calls this to send NFT to the winner of the auction*)
+transition TransferNFT(contract_address : ByStr20, token_id: Uint256, to: ByStr20)
+  IsAuctionContract;
+  TransferNFTtoOwner contract_address token_id to
+end
+
+(*Used by contract owner if something goes wrong, used to recover NFT*)
+transition RecoverNFT(contract_address : ByStr20, token_id: Uint256, to: ByStr20)
+  IsContractOwner;
+  TransferNFTtoOwner contract_address token_id to
+end
+
+
+
+
+(*User call this after setting approval for NFT to create an auction.*)
+(*this will transfer the NFT to this contract, then call auction contract to build the auction*)
+transition CreateAuctionCall (tokenAddress: ByStr20, tokenId:Uint256, startPrice:Uint128, startTime:BNum )
+
+currentDuration <- auctionDuration;
+
+currentAuctionContract <- auction_contract;
+
+TransferNFTtoDEX tokenAddress tokenId;
+
+create = {
+    _tag: "createAuction";
+    _recipient: currentAuctionContract;
+    _amount: Uint128 0;
+    nftOwner: _sender;
+    tokenAddress: tokenAddress;
+    tokenId: tokenId;
+    startPrice: startPrice;
+    duration: currentDuration;
+    startTime: startTime
+    
+};
+msgs = one_msg create;
+  send msgs
+end
+
+transition changeAuctionDuration (newDuration: Uint128)
+IsContractOwner;
+auctionDuration := newDuration
+
+end
+
+
+
+transition changeAuctionContract(newContract: ByStr20)
+IsContractOwner;
+auction_contract := newContract
+
+end
+
+transition TransferFromSuccessCallBack(from: ByStr20, recipient: ByStr20, token_id: Uint256)
+end
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

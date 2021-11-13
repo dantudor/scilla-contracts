@@ -1,0 +1,155 @@
+(* ZSocialProxy *)
+
+(***************************************************)
+(*                 Scilla version                  *)
+(***************************************************)
+
+scilla_version 0
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+import BoolUtils
+library ZSocialProxy
+
+let one_msg =
+  fun (msg: Message) =>
+  let nil_msg = Nil {Message} in
+  Cons {Message} msg nil_msg
+
+let two_msgs =
+fun (msg1 : Message) =>
+fun (msg2 : Message) =>
+  let msgs_tmp = one_msg msg2 in
+  Cons {Message} msg1 msgs_tmp
+  
+(* Error exception *)
+type Error =
+  | CodeInvalidOperation
+  
+let make_error =
+fun (result : Error) =>
+  let result_code = 
+    match result with
+    | CodeInvalidOperation  => Int32 -1
+    end
+  in
+  { _exception : "ZSocialProxyError"; code : result_code }
+  
+let zero128 = Uint128 0 
+let one256 = Uint256 1 
+let defSlot = Uint256 0
+let likesTag = Uint256 0
+let followTag = Uint256 1
+
+contract ZSocialProxy
+(
+  users_contract: ByStr20 with contract 
+                    field user_tag_map : Map ByStr20 (Map Uint256 (Map Uint256 (Map ByStr20 (Uint256)))) 
+                  end,
+  token: ByStr20,
+  like_price: Uint128
+)
+
+(* Emit Errors *)
+procedure ThrowError(err : Error)
+  e = make_error err;
+  throw e
+end
+
+procedure ReceiveToken(amount: Uint128)
+  msg_to_token = {
+    _tag : "TransferFrom"; _recipient: token; _amount: zero128;
+    from: _sender; to: _this_address; amount: amount
+  };
+  msgs = one_msg msg_to_token;
+  send msgs
+end
+
+transition Like(user: ByStr20)
+  ReceiveToken like_price;
+  msg_inc =  {
+    _tag : "OperatorIncTag"; _recipient: users_contract; _amount: zero128;
+    user: user; id: likesTag; value: one256
+  };
+  msg_map =  {
+    _tag : "OperatorSetTagMap"; _recipient: users_contract; _amount: zero128;
+    user: user; id: likesTag; slot: defSlot; mapper: _sender; value: one256 
+  };
+  msgs = two_msgs msg_inc msg_map;
+  send msgs
+end
+
+
+transition Follow(user: ByStr20)
+  maybe_follow <- &users_contract.user_tag_map[user][followTag][defSlot][_sender];
+  match maybe_follow with
+    | None =>
+    | Some follow =>
+      inv_op = CodeInvalidOperation;
+      ThrowError inv_op
+  end;
+  msg_inc =  {
+    _tag : "OperatorIncTag"; _recipient: users_contract; _amount: zero128;
+    user: user; id: followTag; value: one256
+  };
+  msg_map =  {
+    _tag : "OperatorSetTagMap"; _recipient: users_contract; _amount: zero128;
+    user: user; id: followTag; slot: defSlot; mapper: _sender; value: one256 
+  };
+  msgs = two_msgs msg_inc msg_map;
+  send msgs
+end
+
+transition Unfollow(user: ByStr20)
+  maybe_follow <- &users_contract.user_tag_map[user][followTag][defSlot][_sender];
+  match maybe_follow with
+    | Some follow =>
+    | None => 
+      inv_op = CodeInvalidOperation;
+      ThrowError inv_op
+  end;
+  msg_inc =  {
+    _tag : "OperatorDecTag"; _recipient: users_contract; _amount: zero128;
+    user: user; id: followTag; value: one256
+  };
+  msg_map =  {
+    _tag : "OperatorClearTagMap"; _recipient: users_contract; _amount: zero128;
+    user: user; id: followTag; slot: defSlot; mapper: _sender
+  };
+  msgs = two_msgs msg_inc msg_map;
+  send msgs
+end
+
+(***************************************)
+(*             Callbacks               *)
+(***************************************)
+
+
+transition RecipientAcceptTransferFrom(
+  initiator : ByStr20,
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+  is_valid_transfer_to_self =
+    let self_triggered = builtin eq initiator _this_address in
+    let is_transfer_to_self = builtin eq recipient _this_address in
+    andb self_triggered is_transfer_to_self;
+
+  match is_valid_transfer_to_self with
+  | False =>
+    err = CodeInvalidOperation;
+    ThrowError err
+  | True => (* noop *)
+  end
+end
+
+transition TransferFromSuccessCallBack(
+  initiator : ByStr20,
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+  (*Do nothing*)
+end

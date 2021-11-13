@@ -1,0 +1,126 @@
+scilla_version 0
+
+import BoolUtils
+library UnicutesVoteContestLibrary
+
+let zero = Uint128 0
+let one = Uint128 1
+let uint32_one = Uint32 1
+let false = False
+let true = True
+
+(* returns singleton List Message *)
+let one_msg =
+    fun (msg : Message) =>
+        let nil_msg = Nil {Message} in
+        Cons {Message} msg nil_msg
+
+(* Error codes *)
+type Error =
+| CodeClosed
+| CodeNotOwner
+| CodeAlreadyVoted
+let make_error =
+  fun (result: Error) =>
+    let result_code = 
+      match result with
+      | CodeClosed            => Int32 -1
+      | CodeNotOwner          => Int32 -2
+      | CodeAlreadyVoted      => Int32 -3
+      end
+    in
+    { _exception : "Error"; code : result_code }
+
+contract UnicutesVoteContest
+(
+  contract_owner: ByStr20,
+  unicutes_nft_contract: ByStr20,
+  name : String,
+  symbol: String
+)
+
+field is_open : Bool = True
+field unicute_voters : Map Uint256 ByStr20 = Emp Uint256 ByStr20
+field vote_counter : Uint128 = Uint128 0
+
+procedure ThrowError(err: Error)
+  e = make_error err;
+  throw e
+end
+
+(* ================ *)
+(* Admin Procedures *)
+(* ================ *)
+
+procedure IsOpen()
+  is <- is_open;
+  match is with
+  | True =>
+  | False =>
+    err = CodeClosed;
+    ThrowError err
+  end
+end
+
+procedure IsOwner()
+  is_owner = builtin eq contract_owner _sender;
+  match is_owner with
+  | True =>
+  | False =>
+    err = CodeNotOwner;
+    ThrowError err
+  end
+end
+
+(* ==================== *)
+(* Anonymous Procedures *)
+(* ==================== *)
+
+
+
+(* ===================== *)
+(* Anonymous Transitions *)
+(* ===================== *)
+
+
+transition Close()
+   IsOwner;
+   val = False;
+   is_open := val;
+   e = {
+    _eventname: "Close";
+    amount : _amount
+  };
+  event e
+end
+(* test with sender as arg *)
+transition Vote(vote_on: Uint256, vote_on_behalf_of: Uint256, sender: ByStr20)
+  option_voter <- unicute_voters[vote_on];
+  match option_voter with
+  | Some voter =>
+    err = CodeAlreadyVoted;
+    ThrowError err
+  | None =>
+  end;
+  msg_to_unicutes = {
+    _tag  : "CheckTokenOwner";
+    _amount: zero;
+    _recipient : unicutes_nft_contract;
+    token_id: vote_on_behalf_of;
+    address: sender
+  };
+  msg = one_msg msg_to_unicutes;
+  send msg;
+  current_vote_counter <- vote_counter;
+  new_vote_counter = builtin add current_vote_counter one;
+  vote_counter := new_vote_counter;
+  e = {_eventname: "VoteSuccess"; initiator: _sender};
+  event e
+end
+
+transition Withdraw(amount: Uint128)
+  IsOwner;
+  msg  = {_tag : ""; _recipient : _sender; _amount : amount};
+  msgs = one_msg msg;
+  send msgs
+end

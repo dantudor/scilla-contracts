@@ -1,0 +1,150 @@
+scilla_version 0
+
+import BoolUtils ListUtils IntUtils
+
+library Marketplace_promote
+
+let one_msg = 
+  fun (msg : Message) => 
+    let nil_msg = Nil {Message} in
+    Cons {Message} msg nil_msg
+    
+    
+let one = Uint256 1
+    
+    
+let order_number_not_found = Int32 1
+let order_already_promoted = Int32 2
+let order_has_been_promoted = Int32 3
+let order_has_been_removed = Int32 4
+let fee_has_been_changed = Int32 5
+let not_contract_owner = Int32 6
+let promo_has_been_removed = Int32 7
+let order_does_not_exist = Int32 8
+
+type MPStatus =
+| Pending
+| Active
+| Sold
+| Cancelled
+
+(*ByStr20 - Address of owner*)
+(*Uint256 - Price*)
+(*ByStr20 - Address of contract *)
+(*Uint256 - tokenID*)
+(*Uint256 - orderID*)
+(*Status  - Order status*)
+
+
+
+
+
+ type Order =
+| Order of  BNum ByStr20 Uint128 ByStr20 Uint256  
+
+
+contract Listing_Promote
+(*  Parameters *)
+(contract_owner : ByStr20,
+ spw_contract: ByStr20,
+ mp_contract: ByStr20)
+ 
+field promo_runtime : Uint128 = Uint128 2600
+
+field fee: Uint128 = Uint128 10000000 (*SPW 1,000.0000 at time of deploy*)
+ 
+
+ 
+field orderbook : Map Uint256 Order
+                  = Emp Uint256 Order
+                  
+                  
+transition promote (order_num: Uint256, contract_address: ByStr20, token_id: Uint256, price: Uint128) 
+
+promotions <- exists orderbook[order_num];
+
+match promotions with 
+  |True =>
+    
+     delete orderbook[order_num];
+     
+     time <- promo_runtime;
+ blk <- & BLOCKNUMBER;
+  endtime = builtin badd blk time;
+
+    current_fee <- fee;
+    
+    new_order = Order endtime _sender price contract_address token_id ;
+    orderbook[order_num] := new_order;
+
+
+    
+     msg = {_tag : "TransferFrom"; _recipient: spw_contract; _amount: Uint128 0;
+             from: _sender; to: contract_owner; amount: current_fee};
+      msgs = one_msg msg;
+      send msgs;
+     
+     
+     e = {_eventname : "NFT Listing has been Promoted"; code: order_has_been_promoted};
+    event e
+   
+    
+  |False=>
+    
+time <- promo_runtime;
+ blk <- & BLOCKNUMBER;
+  endtime = builtin badd blk time;
+
+    current_fee <- fee;
+    
+    new_order = Order endtime _sender price contract_address token_id ;
+    orderbook[order_num] := new_order;
+
+
+    
+     msg = {_tag : "TransferFrom"; _recipient: spw_contract; _amount: Uint128 0;
+             from: _sender; to: contract_owner; amount: current_fee};
+      msgs = one_msg msg;
+      send msgs;
+      
+         e = {_eventname : "NFT Listing has been Promoted"; code: order_has_been_promoted};
+    event e
+
+end
+end
+
+
+transition change_fee (new_fee: Uint128)
+
+owner = builtin eq contract_owner _sender;
+
+match owner with
+  |True =>
+    fee := new_fee
+
+  |False => 
+    
+    e = {_eventname : "Promo has been deleted"; code: not_contract_owner};
+    event e
+end
+end
+
+(*Contract Owner removal of Promo*)
+transition remove_promo (order_num: Uint256)
+
+owner = builtin eq contract_owner _sender;
+
+match owner with
+  |True =>
+    delete orderbook[order_num]
+
+  |False => 
+    
+    e = {_eventname : "Not Contract Owner"; code: promo_has_been_removed};
+    event e
+    
+end
+end
+
+
+

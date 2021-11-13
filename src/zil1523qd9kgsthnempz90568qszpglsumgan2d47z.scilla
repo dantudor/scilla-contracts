@@ -1,0 +1,196 @@
+scilla_version 0
+
+(* ZBadge Contract *)
+(* This example contract demonstrates how to issue controlled and scarce unique badges *)
+
+(* @note: ZBadge allows a single authority to manage access and membership to scarce, unique badges. *)
+(* Each badge contract has a primary authority, who can add member holders by issuing them badges. or add member badges by calling the addBadge transition *)
+(* to add, remove and update badges from community participants. Access controls logic is *)
+(* delibrately left out for brevity. *)
+
+
+(* In production deployments, you will want to implement proper access *)
+(* control logic in your smart contract *)
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+import BoolUtils 
+library ZBadge
+
+let one_msg = 
+  fun (msg : Message) => 
+  let nil_msg = Nil {Message} in
+  Cons {Message} msg nil_msg
+
+(* Error events *)
+type Error =
+  | CodeNotAuthorized
+  | CodeBadgeNotFound
+  | CodeBadgeExists
+  | CodeInvalidSigner
+  | CodeInvalidSignature
+
+let make_error =
+  fun (result : Error) =>
+    let result_code = 
+      match result with
+      | CodeNotAuthorized    => Int32 -1
+      | CodeBadgeNotFound    => Int32 -2
+      | CodeBadgeExists      => Int32 -3
+      | CodeInvalidSigner    => Int32 -4
+      | CodeInvalidSignature => Int32 -5
+      end
+    in
+    { _exception : "Error"; code : result_code }
+
+
+let prefix = "0x"
+let one = Uint32 1
+(***************************************************)
+(*             The contract definition             *)
+(***************************************************)
+contract ZBadge
+(owner: ByStr20,
+authority: ByStr20)
+
+
+(* Mapping between badgeID to badge owner *)
+field badgeHolders: Map Uint32 (Map ByStr20 Uint32) 
+= Emp Uint32 (Map ByStr20 Uint32)
+
+(* badgeNames will store a Map of Badges to their names            *)
+(* badge data consists of two attributes: BadgeID and Name         *)
+
+(* Equivalent member data in C++ struct *)
+(* struct Badge {                                                  *)
+(*     Uint32 BadgeID;                                             *)
+(*     String Name;                                                *)
+(* }                                                               *)
+
+field badgeNames: Map Uint32 String
+                    = Emp Uint32 String
+
+(*Track the number of badges in the above map*)
+field badgeNames_size : Uint32 = Uint32 0
+(* Procedures *)
+
+(* Emit Errors *)
+procedure ThrowError(err : Error)
+  e = make_error err;
+  throw e
+end
+
+procedure IsAuthority()
+  is_authority = builtin eq authority _sender;
+  match is_authority with
+  | True => 
+  | False =>
+    err = CodeNotAuthorized;
+    ThrowError err
+  end
+end
+
+(* ======== transitions ===============*)
+
+
+
+(* @dev: adds a candidate to the map of badge holders if their request is valid*)
+transition issueBadge(pubkey: ByStr33, candidate: ByStr20, badgeID: Uint32, signature: ByStr64)
+    IsAuthority;
+        (* Check if membership type is valid. *)
+        valid_type <- exists badgeNames[badgeID];
+        match valid_type with
+        | True =>
+            hash = builtin sha256hash pubkey;
+            strHash = builtin to_string hash;
+            offset = Uint32 26;
+            length = Uint32 40;
+            addr = builtin substr strHash offset length;
+            fixed_addr = builtin concat prefix addr;
+            candidate_str = builtin to_string candidate;
+            candidate_is_signer = builtin eq fixed_addr candidate_str;
+            match candidate_is_signer with
+            | True =>
+                badgeName <-badgeNames[badgeID];
+                name_hash = builtin sha256hash badgeName;
+                arb_name_hash = builtin to_bystr name_hash;
+                valid_sig = builtin schnorr_verify pubkey arb_name_hash signature;
+                match valid_sig with
+                | True =>
+                    badgeHolders[badgeID][candidate]:= one;
+                    e = {_eventname : "BadgeIssued"; recipient : candidate; badge_id:badgeID};
+                    event e
+                | False =>
+                    err = CodeInvalidSignature;
+                    ThrowError err
+                end
+            | False =>
+            err = CodeInvalidSigner;
+            ThrowError err
+            end
+        | False =>
+            err = CodeBadgeNotFound;
+                ThrowError err
+        end
+end
+
+(* @dev: removes a badge holder from the map of holders of the badge if their request is valid*)
+transition burnBadge(pubkey: ByStr33, holder: ByStr20, badgeID: Uint32, signature: ByStr64)
+    IsAuthority;
+        (* Only an authorized sender can remove a badge *)
+        (* Check if membership type is valid. *)
+        valid_type <- exists badgeNames[badgeID];
+        match valid_type with
+        | True =>
+            hash = builtin sha256hash pubkey;
+            strHash = builtin to_string hash;
+            offset = Uint32 26;
+            length = Uint32 40;
+            addr = builtin substr strHash offset length;
+            fixed_addr = builtin concat prefix addr;
+            holder_str = builtin to_string holder;
+            holder_is_signer = builtin eq fixed_addr holder_str;
+            match holder_is_signer with
+            | True =>
+                badgeName <-badgeNames[badgeID];
+                name_hash = builtin sha256hash badgeName;
+                arb_name_hash = builtin to_bystr name_hash;
+                valid_sig = builtin schnorr_verify pubkey arb_name_hash signature;
+                match valid_sig with
+                | True =>
+                    delete badgeHolders[badgeID][holder];
+                    e = {_eventname : "BadgeBurned"; holder : holder; badge_id:badgeID};
+                    event e
+                | False =>
+                err = CodeInvalidSignature;
+                ThrowError err
+                end
+            | False =>
+            err = CodeInvalidSigner;
+            ThrowError err
+            end
+        | False =>
+            err = CodeBadgeNotFound;
+                ThrowError err
+        end
+end
+
+(* @notice: Allows a `_sender` to add a badge class to the store *)
+(* @dev   : Access is limited to the authority          *)
+(* @param: badgeID : desired ide number of badge        *)
+(* @param: badgeName : title of the badge               *)
+
+transition addBadge(badgeID: Uint32, badgeName: String)
+    IsAuthority;
+        badgeExists <- exists badgeNames[badgeID];
+        match badgeExists with
+        | False =>
+            badgeNames[badgeID]:=badgeName;
+            e = {_eventname : "NewBadgeAdded"; initiator : _sender; badge_id:badgeID; badge_name:badgeName};
+                event e
+        | True =>
+            err = CodeBadgeExists;
+            ThrowError err
+        end
+end

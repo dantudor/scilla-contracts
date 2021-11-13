@@ -1,0 +1,507 @@
+scilla_version 0
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+import IntUtils ListUtils BoolUtils
+library CompoundFungibleToken
+
+let one_msg = 
+  fun (msg : Message) => 
+  let nil_msg = Nil {Message} in
+  Cons {Message} msg nil_msg
+
+let two_msgs =
+fun (msg1 : Message) =>
+fun (msg2 : Message) =>
+  let msgs_tmp = one_msg msg2 in
+  Cons {Message} msg1 msgs_tmp
+
+let optional_value =
+  tfun 'A =>
+  fun (default: 'A) =>
+  fun (opt_val: Option 'A) =>
+    match opt_val with
+    | Some v => v
+    | None => default
+    end
+
+let list_map : forall 'A. forall 'B. ('A -> 'B) -> List 'A -> List 'B = 
+  tfun 'A => tfun 'B =>
+  fun (f : 'A ->'B) =>
+  let foldr = @list_foldr 'A (List 'B) in
+  let iter = fun (h : 'A) => fun (z : List 'B) =>
+    let value = f h in
+    Cons {'B} value z in
+  let init = Nil {'B} in
+  foldr iter init
+  
+(* Error events *)
+type Error =
+| CodeIsSender
+| CodeInsufficientFunds
+| CodeInsufficientAllowance
+| CodeNotOwner
+| CodeNotPendingOwner
+| CodeInvalidOperation
+
+let make_error =
+  fun (result : Error) =>
+    let result_code = 
+      match result with
+      | CodeIsSender              => Int32 -1
+      | CodeInsufficientFunds     => Int32 -2
+      | CodeInsufficientAllowance => Int32 -3
+      | CodeNotOwner              => Int32 -4
+      | CodeNotPendingOwner       => Int32 -101
+      | CodeInvalidOperation      => Int32 -102
+      end
+    in
+    { _exception : "Error"; code : result_code }
+  
+let zero = Uint128 0
+let zero256 = Uint256 0
+let fee_denom = Uint128 10000
+let zil_address = 0x0000000000000000000000000000000000000000
+
+(* Dummy user-defined ADT *)
+type Unit =
+| Unit
+
+let get_val = 
+  fun (value: Option Uint128) =>
+  let opt = @optional_value Uint128 in
+  opt zero value 
+
+let muldiv =
+  fun (a: Uint128) =>
+  fun (b: Uint128) =>
+  fun (c: Uint128) =>
+    let opt = @optional_value Uint256 in
+    let opt2 = @optional_value Uint128 in
+    let oa = builtin to_uint256 a in let ha = opt zero256 oa in
+    let ob = builtin to_uint256 b in let hb = opt zero256 ob in
+    let oc = builtin to_uint256 c in let hc = opt zero256 oc in
+    let num = builtin mul ha hb in
+    let hv =  builtin div num hc in
+    let ov = builtin to_uint128 hv in
+      opt2 zero ov
+
+type PackedToken =
+  | PackedToken of ByStr20 Uint128 Uint128
+  
+let pack_token = 
+  fun (amount: Uint128) => 
+  fun (pair: Pair ByStr20 Uint128) => 
+    match pair with 
+      | Pair token multiplier =>
+        PackedToken token multiplier amount
+    end
+(***************************************************)
+(*             The contract definition             *)
+(***************************************************)
+
+contract CompoundFungibleToken
+(
+  contract_owner: ByStr20,
+  name : String,
+  symbol: String,
+  decimals: Uint32,
+  init_supply : Uint128,
+  tokens: List (Pair ByStr20 Uint128),
+  fee: Uint128
+)
+
+(* Mutable fields *)
+field owner : ByStr20 = contract_owner
+field pending_owner : ByStr20 = zil_address
+
+field total_supply : Uint128 = init_supply
+
+field balances: Map ByStr20 Uint128 
+  = Emp ByStr20 Uint128
+
+field allowances: Map ByStr20 (Map ByStr20 Uint128) 
+  = Emp ByStr20 (Map ByStr20 Uint128)
+
+field fee_accumulator: Map ByStr20 Uint128 = Emp ByStr20 Uint128
+(**************************************)
+(*             Procedures             *)
+(**************************************)
+
+procedure ThrowError(err : Error)
+  e = make_error err;
+  throw e
+end
+
+procedure IsNotSender(address: ByStr20)
+  is_sender = builtin eq _sender address;
+  match is_sender with
+  | True =>
+    err = CodeIsSender;
+    ThrowError err
+  | False =>
+  end
+end
+
+procedure IsSender(address: ByStr20)
+  is_sender = builtin eq _sender address;
+  match is_sender with
+  | True =>
+  | False =>
+    err = CodeInvalidOperation;
+    ThrowError err
+  end
+end
+
+procedure ThrowUnlessSenderIsOwner()
+  current_owner <- owner;
+  is_owner = builtin eq _sender current_owner;
+  match is_owner with
+  | True =>
+  | False =>
+    err = CodeNotOwner;
+    ThrowError err
+  end
+end
+
+procedure AuthorizedMoveIfSufficientBalance(from: ByStr20, to: ByStr20, amount: Uint128)
+  o_from_bal <- balances[from];
+  bal = get_val o_from_bal;
+  can_do = uint128_le amount bal;
+  match can_do with
+  | True =>
+    (* Subtract amount from from and add it to to address *)
+    new_from_bal = builtin sub bal amount;
+    balances[from] := new_from_bal;
+    (* Adds amount to to address *)
+    get_to_bal <- balances[to];
+    new_to_bal = match get_to_bal with
+    | Some bal => builtin add bal amount
+    | None => amount
+    end;
+    balances[to] := new_to_bal
+  | False =>
+    (* Balance not sufficient *)
+    err = CodeInsufficientFunds;
+    ThrowError err
+  end
+end
+
+procedure SendToken(token: ByStr20, amount: Uint128, to_address : ByStr20)
+  msg_to_token =  {
+    _tag : "Transfer"; _recipient: token; _amount: zero;
+    to: to_address; amount: amount
+  };
+  msgs = one_msg msg_to_token;
+  send msgs
+end
+
+procedure ReceiveToken(token: ByStr20, amount: Uint128)
+  msg_to_token = {
+    _tag : "TransferFrom"; _recipient: token; _amount: zero;
+    from: _sender; to: _this_address; amount: amount
+  };
+  msgs = one_msg msg_to_token;
+  send msgs
+end
+
+procedure ReceivePackedToken(packed: PackedToken)
+  match packed with
+  | PackedToken token multiplier amount =>
+    token_amount = builtin mul amount multiplier;
+    has_fee = uint128_gt fee zero;
+    match has_fee with
+      | True =>
+        fee_amount = muldiv token_amount fee fee_denom;
+        fee_valid = uint128_gt fee_amount zero;
+        match fee_valid with 
+        | True => 
+          maybe_acc <- fee_accumulator[token];
+          acc = get_val maybe_acc;
+          new_acc = builtin add acc fee_amount;
+          fee_accumulator[token] := new_acc;
+          receive_amount = builtin add token_amount fee_amount;
+          ReceiveToken token receive_amount
+        | False =>
+          ReceiveToken token token_amount
+        end
+      | False =>
+        ReceiveToken token token_amount
+    end
+  end
+end
+
+procedure SendPackedToken(packed: PackedToken)
+  match packed with
+  | PackedToken token multiplier amount =>
+    (* Send tokens *)
+    token_amount = builtin mul amount multiplier;
+    has_fee = uint128_gt fee zero;
+    match has_fee with
+      | True =>
+        fee_amount = muldiv token_amount fee fee_denom;
+        fee_valid = let non_neg = uint128_gt token_amount fee_amount in
+                    let gt_zero = uint128_gt fee_amount zero in
+                    andb non_neg gt_zero;
+        match fee_valid with 
+        | True => 
+          maybe_acc <- fee_accumulator[token];
+          acc = get_val maybe_acc;
+          new_acc = builtin add acc fee_amount;
+          fee_accumulator[token] := new_acc;
+          send_amount = builtin sub token_amount fee_amount;
+          SendToken token send_amount _sender
+        | False =>
+          SendToken token token_amount _sender
+        end
+      | False =>
+        SendToken token token_amount _sender
+    end
+  end
+end
+
+procedure SendFee(packed: Pair ByStr20 Uint128)
+  match packed with
+  | Pair token multiplier =>
+    (* Send tokens *)
+    maybe_amount <- fee_accumulator[token];
+    amount = get_val maybe_amount;
+    fee_accumulator[token] := zero;
+    SendToken token amount _sender;
+    e = {_eventname: "FeeClaimed"; recipient: _sender; token: token; amount: amount};
+    event e
+  end
+end
+
+procedure AuthorizedMint(amount: Uint128)
+  o_recipient_bal <- balances[_sender];
+  bal = get_val o_recipient_bal;
+  new_balance = builtin add amount bal;
+  balances[_sender] := new_balance;
+  current_total_supply <- total_supply;
+  new_total_supply = builtin add current_total_supply amount;
+  total_supply := new_total_supply;
+  
+  (* Receive tokens and apply fee *)
+  packed = 
+    let map = @list_map (Pair ByStr20 Uint128) PackedToken in
+    let pack_with = pack_token amount in
+    map pack_with tokens;
+  forall packed ReceivePackedToken;
+  
+  e = {_eventname: "Minted"; minter: _sender; recipient: _sender; amount: amount};
+  event e
+end
+
+procedure AuthorizedBurnIfSufficientBalance(amount: Uint128)
+  o_get_bal <- balances[_sender];
+  bal = get_val o_get_bal;
+  can_burn = uint128_le amount bal;
+  match can_burn with
+  | True =>
+    (* Subtract amount from _sender *)
+    new_balance = builtin sub bal amount;
+    balances[_sender] := new_balance;
+    current_total_supply <- total_supply;
+    new_total_supply = builtin sub current_total_supply amount;
+    total_supply := new_total_supply;
+    
+    (* Send tokens *)
+    packed = 
+      let map = @list_map (Pair ByStr20 Uint128) PackedToken in
+      let pack_with = pack_token amount in
+      map pack_with tokens;
+      forall packed SendPackedToken;
+    e = {_eventname: "Burnt"; burner: _sender; burn_account: _sender; amount: amount};
+    event e
+  | False =>
+    err = CodeInsufficientFunds;
+    ThrowError err
+  end
+end
+
+(***************************************)
+(*             Transitions             *)
+(***************************************)
+
+(* @dev: Mint new tokens. Recipient must be equal to sender                  *)
+(* @param recipient: Address of the recipient whose balance is to increase.  *)
+(* @param amount:    Number of tokens to be minted.                          *)
+transition Mint(recipient: ByStr20, amount: Uint128)
+  IsSender recipient;
+  AuthorizedMint amount;
+  (* Prevent sending to a contract address that does not support transfers of token *)
+  msg_to_recipient = {_tag : "RecipientAcceptMint"; _recipient : recipient; _amount : zero;
+                      minter : _sender; recipient : recipient; amount : amount};
+  msg_to_sender = {_tag : "MintSuccessCallBack"; _recipient : _sender; _amount : zero;
+                      minter : _sender; recipient : recipient; amount : amount};
+  msgs = two_msgs msg_to_recipient msg_to_sender;
+  send msgs
+end
+
+(* @dev: Burn existing tokens. Burn Account must be equal to sender               *)
+(* @param burn_account: Address of the token_owner whose balance is to decrease.  *)
+(* @param amount:       Number of tokens to be burned.                            *)
+transition Burn(burn_account: ByStr20, amount: Uint128)
+  IsSender burn_account;
+  AuthorizedBurnIfSufficientBalance amount;
+  msg_to_sender = {_tag : "BurnSuccessCallBack"; _recipient : _sender; _amount : zero;
+                    burner : _sender; burn_account : burn_account; amount : amount};
+  msgs = one_msg msg_to_sender;
+  send msgs
+end
+
+(* @dev: Increase the allowance of an approved_spender over the caller tokens. Only token_owner allowed to invoke.   *)
+(* param spender:      Address of the designated approved_spender.                                                   *)
+(* param amount:       Number of tokens to be increased as allowance for the approved_spender.                       *)
+transition IncreaseAllowance(spender: ByStr20, amount: Uint128)
+  IsNotSender spender;
+  some_current_allowance <- allowances[_sender][spender];
+  current_allowance = get_val some_current_allowance;
+  new_allowance = builtin add current_allowance amount;
+  allowances[_sender][spender] := new_allowance;
+  e = {_eventname : "IncreasedAllowance"; token_owner : _sender; spender: spender; new_allowance : new_allowance};
+  event e
+end
+
+(* @dev: Decrease the allowance of an approved_spender over the caller tokens. Only token_owner allowed to invoke. *)
+(* param spender:      Address of the designated approved_spender.                                                 *)
+(* param amount:       Number of tokens to be decreased as allowance for the approved_spender.                     *)
+transition DecreaseAllowance(spender: ByStr20, amount: Uint128)
+  IsNotSender spender;
+  some_current_allowance <- allowances[_sender][spender];
+  current_allowance = get_val some_current_allowance;
+  new_allowance =
+    let amount_le_allowance = uint128_le amount current_allowance in
+      match amount_le_allowance with
+      | True => builtin sub current_allowance amount
+      | False => zero
+      end;
+  allowances[_sender][spender] := new_allowance;
+  e = {_eventname : "DecreasedAllowance"; token_owner : _sender; spender: spender; new_allowance : new_allowance};
+  event e
+end
+
+(* @dev: Moves an amount tokens from _sender to the recipient. Used by token_owner. *)
+(* @dev: Balance of recipient will increase. Balance of _sender will decrease.      *)
+(* @param to:  Address of the recipient whose balance is increased.                 *)
+(* @param amount:     Amount of tokens to be sent.                                  *)
+transition Transfer(to: ByStr20, amount: Uint128)
+  AuthorizedMoveIfSufficientBalance _sender to amount;
+  e = {_eventname : "TransferSuccess"; sender : _sender; recipient : to; amount : amount};
+  event e;
+  (* Prevent sending to a contract address that does not support transfers of token *)
+  msg_to_recipient = {_tag : "RecipientAcceptTransfer"; _recipient : to; _amount : zero; 
+                      sender : _sender; recipient : to; amount : amount};
+  msg_to_sender = {_tag : "TransferSuccessCallBack"; _recipient : _sender; _amount : zero; 
+                  sender : _sender; recipient : to; amount : amount};
+  msgs = two_msgs msg_to_recipient msg_to_sender;
+  send msgs
+end
+
+(* @dev: Move a given amount of tokens from one address to another using the allowance mechanism. The caller must be an approved_spender. *)
+(* @dev: Balance of recipient will increase. Balance of token_owner will decrease.                                                        *)
+(* @param from:    Address of the token_owner whose balance is decreased.                                                                 *)
+(* @param to:      Address of the recipient whose balance is increased.                                                                   *)
+(* @param amount:  Amount of tokens to be transferred.                                                                                    *)
+transition TransferFrom(from: ByStr20, to: ByStr20, amount: Uint128)
+  o_spender_allowed <- allowances[from][_sender];
+  allowed = get_val o_spender_allowed;
+  can_do = uint128_le amount allowed;
+  match can_do with
+  | True =>
+    AuthorizedMoveIfSufficientBalance from to amount;
+    e = {_eventname : "TransferFromSuccess"; initiator : _sender; sender : from; recipient : to; amount : amount};
+    event e;
+    new_allowed = builtin sub allowed amount;
+    allowances[from][_sender] := new_allowed;
+    (* Prevent sending to a contract address that does not support transfers of token *)
+    msg_to_recipient = {_tag: "RecipientAcceptTransferFrom"; _recipient : to; _amount: zero; 
+                        initiator: _sender; sender : from; recipient: to; amount: amount};
+    msg_to_sender = {_tag: "TransferFromSuccessCallBack"; _recipient: _sender; _amount: zero; 
+                    initiator: _sender; sender: from; recipient: to; amount: amount};
+    msgs = two_msgs msg_to_recipient msg_to_sender;
+    send msgs
+  | False =>
+    err = CodeInsufficientAllowance;
+    ThrowError err
+  end
+end
+
+(* Claim Fee *)
+transition ClaimFee()
+  ThrowUnlessSenderIsOwner;
+  forall tokens SendFee
+end
+
+(* Ownership *)
+transition TransferOwnership(
+  new_owner : ByStr20
+)
+  ThrowUnlessSenderIsOwner;
+  existing_owner <- owner;
+  new_owner_is_existing_owner = builtin eq new_owner existing_owner;
+  match new_owner_is_existing_owner with
+  | True =>
+    err = CodeInvalidOperation;
+    ThrowError err
+  | False =>
+    pending_owner := new_owner
+  end
+end
+
+transition AcceptPendingOwnership()
+  new_owner <- pending_owner;
+  sender_is_pending_owner = builtin eq _sender new_owner;
+  match sender_is_pending_owner with
+  | False =>
+    err = CodeNotPendingOwner;
+    ThrowError err
+  | True =>
+    owner := new_owner;
+    pending_owner := zil_address;
+    e = { _eventname: "OwnershipTransferred"; owner: new_owner };
+    event e
+  end
+end
+
+(***************************************)
+(*             Callbacks               *)
+(***************************************)
+
+transition RecipientAcceptTransferFrom(
+  initiator : ByStr20,
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+  is_valid_transfer_to_self =
+    let self_triggered = builtin eq initiator _this_address in
+    let is_transfer_to_self = builtin eq recipient _this_address in
+    andb self_triggered is_transfer_to_self;
+
+  match is_valid_transfer_to_self with
+  | False =>
+    err = CodeInvalidOperation;
+    ThrowError err
+  | True => (* noop *)
+  end
+end
+
+transition TransferFromSuccessCallBack(
+  initiator : ByStr20,
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+  (*Do nothing*)
+end
+
+transition TransferSuccessCallBack(
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+  (*Do nothing*)
+end

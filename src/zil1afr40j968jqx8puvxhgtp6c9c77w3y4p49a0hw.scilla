@@ -1,0 +1,735 @@
+scilla_version 0
+
+import BoolUtils PairUtils ListUtils
+library UnicutesLibrary
+
+let option_to_uint256 =
+  fun (val : Option Uint256) =>
+    match val with
+    | Some x => x
+    | None => Uint256 0
+    end
+
+let one_msg = 
+  fun (msg : Message) => 
+    let nil_msg = Nil {Message} in
+    Cons {Message} msg nil_msg
+
+let two_msgs =
+  fun (msg1 : Message) =>
+  fun (msg2 : Message) =>
+    let msgs_tmp = one_msg msg2 in
+    Cons {Message} msg1 msgs_tmp
+
+(* drand round, drand index *)
+type RandomValue =
+  | RandomValue of Uint256 Uint32 (Option ByStr3)
+  
+(* drand round, drand index, drand value, is legendary *)
+type Unicute = 
+  | Unicute of Uint256 Uint32 (Option String) (Option Bool)
+
+let uint256_zero = Uint256 0
+let uint256_one = Uint256 1
+
+(* User-defined ADTs *)
+type Dummy =
+| Dummy
+
+let verdad = Dummy
+
+type Operation =
+| Add
+| Sub
+
+let add_operation = Add
+let sub_operation = Sub
+
+(* =========== *)
+(* Error Codes *)
+(* =========== *)
+
+type Error =
+| CodeIsSelf
+| CodeNotApproved
+| CodeNotFound
+| CodeNotApprovedForAll
+| CodeNotOwnerOrOperator
+| CodeNotApprovedSpenderOrOperator
+| CodeNotOwner
+| CodeNotOracle
+| CodeUnicuteDontExist
+| CodeDrandRoundNotEqual
+| CodeDrandIndexNotEqual
+| CodeIllegalOperation
+| CodeNotProxy
+| CodeMaxSupplyReached
+
+let make_error =
+  fun (result : Error) =>
+    let result_code = 
+      match result with
+      | CodeIsSelf                                      => Int32 -1
+      | CodeNotApproved                                 => Int32 -2
+      | CodeNotFound                                    => Int32 -3
+      | CodeNotApprovedForAll                           => Int32 -4
+      | CodeNotOwnerOrOperator                          => Int32 -5
+      | CodeNotApprovedSpenderOrOperator                => Int32 -6
+      | CodeNotOwner                                    => Int32 -7
+      | CodeNotOracle                                   => Int32 -8
+      | CodeUnicuteDontExist                            => Int32 -9
+      | CodeDrandRoundNotEqual                          => Int32 -10
+      | CodeDrandIndexNotEqual                          => Int32 -11
+      | CodeIllegalOperation                            => Int32 -12
+      | CodeNotProxy                                    => Int32 -13
+      | CodeMaxSupplyReached                            => Int32 -14
+      end
+    in
+    { _exception : "Error"; code : result_code }
+
+(* ==================== *)
+(* Contract Definitions *)
+(* ==================== *)
+
+contract Unicutes
+(
+  contract_owner: ByStr20,
+  name : String,
+  symbol: String,
+  max_supply: Uint256
+)
+
+(* ================ *)
+(* Admin Parameters *)
+(* ================ *)
+
+(* listen for events and feed random values on request basis*)
+field oracle : ByStr20 = contract_owner
+(* whitelisted proxies *)
+field whitelisted_proxies : Map ByStr20 Dummy = Emp ByStr20 Dummy
+
+(* ==================== *)
+(* Non-Admin Parameters *)
+(* ==================== *)
+
+(* unicutes ready to be created - new token id, address *)
+field transit_token_owners : Map Uint256 ByStr20 = Emp Uint256 ByStr20
+(* unicute id, address *)
+field token_owners : Map Uint256 ByStr20 = Emp Uint256 ByStr20
+(* Mapping from owner to number of owned tokens *)
+field owned_token_count: Map ByStr20 Uint256 = Emp ByStr20 Uint256
+(* Total token (unicutes) count *)
+field total_supply : Uint256 = Uint256 0
+(* fast lookups - address, unicute id, unicute *)
+field owned_tokens : Map ByStr20 (Map Uint256 Unicute) = Emp ByStr20 (Map Uint256 Unicute)
+
+(* Mapping between token_id to approved address                              *)
+(* @dev: There can only be one approved address per token at any given time. *)
+field token_approvals: Map Uint256 ByStr20 = Emp Uint256 ByStr20
+(* Mapping of token_owner to operator  *)
+field operator_approvals: Map ByStr20 (Map ByStr20 Dummy)
+                            = Emp ByStr20 (Map ByStr20 Dummy)
+(* Mapping from token_id to token_uri *)
+field token_uris: Map Uint256 String = Emp Uint256 String
+
+(* ================== *)
+(* General Procedures *)
+(* ================== *)
+
+procedure ThrowError(err : Error)
+  e = make_error err;
+  throw e
+end
+
+(* ==================== *)
+(* Anonymous Procedures *)
+(* ==================== *)
+
+procedure ProtectAgainstTokenOverwrite(token_id: Uint256)
+  transit_token_owners_option <- transit_token_owners[token_id];
+  match transit_token_owners_option with
+  | None =>
+  | Some x =>
+    err = CodeIllegalOperation;
+    ThrowError err
+  end;
+  token_owners_option <- token_owners[token_id];
+  match token_owners_option with
+  | None =>
+  | Some x =>
+    err = CodeIllegalOperation;
+    ThrowError err
+  end
+end
+
+procedure IsMaxSupplyReached(current_supply: Uint256)
+  is_max_supply_reached = builtin eq current_supply max_supply;
+  match is_max_supply_reached with
+  | False =>
+  | True =>
+    err = CodeMaxSupplyReached;
+    ThrowError err
+  end
+end
+
+procedure IsUnicuteOwner(unicute_id: Uint256, sender: ByStr20)
+  option_unicute_owner <- token_owners[unicute_id];
+  match option_unicute_owner with
+  | None =>
+    err = CodeUnicuteDontExist;
+    ThrowError err
+  | Some unicute_owner =>
+    is_owner = builtin eq unicute_owner _sender;
+    match is_owner with
+    | True =>
+    | False =>
+      err = CodeNotOwner;
+      ThrowError err
+    end
+  end
+end
+
+(* ================ *)
+(* Admin Procedures *)
+(* ================ *)
+
+procedure IsOwner()
+  is_owner = builtin eq contract_owner _sender;
+  match is_owner with
+  | True =>
+  | False =>
+    err = CodeNotOwner;
+    ThrowError err
+  end
+end
+
+(* ================ *)
+(* Proxy Proceduers *)
+(* ================ *)
+
+procedure IsProxy()
+  is_proxy <- whitelisted_proxies[_sender];
+  match is_proxy with
+  | None =>
+    err = CodeNotProxy;
+    ThrowError err
+  | Some x =>
+  end
+end
+
+(* ================= *)
+(* Oracle Procedures *)
+(* ================= *)
+
+procedure IsOracle()
+  current_oracle <- oracle;
+  is_oracle = builtin eq current_oracle _sender;
+  match is_oracle with
+  | True =>
+  | False =>
+    err = CodeNotOracle;
+    ThrowError err
+  end
+end
+
+procedure IsRandomValueEqual(old_round:Uint256, old_index:Uint32, new_round:Uint256, new_index:Uint32)
+  is_drand_round_equal = builtin eq old_round new_round;
+  is_drand_index_equal = builtin eq old_index new_index;
+  match is_drand_round_equal with
+  | False =>
+    err = CodeDrandRoundNotEqual;
+    ThrowError err
+  | True =>
+    match is_drand_index_equal with
+    | False =>
+      err = CodeDrandIndexNotEqual;
+      ThrowError err
+    | True =>
+    end
+  end
+end
+
+(* =========================== *)
+(* Standard ZRC/NTF Procedures *)
+(* =========================== *)
+
+procedure IsSelf(address_a: ByStr20, address_b: ByStr20)
+  is_self = builtin eq address_a address_b;
+  match is_self with
+  | False =>
+  | True =>
+    err = CodeIsSelf;
+    ThrowError err
+  end
+end
+
+procedure IsApprovedForAll(token_owner: ByStr20, operator: ByStr20)
+  is_operator_approved <- exists operator_approvals[token_owner][operator];
+  match is_operator_approved with
+  | True =>
+  | False =>
+    err = CodeNotApprovedForAll;
+    ThrowError err
+  end
+end
+
+procedure IsOwnerOrOperator(token_owner: ByStr20, sender: ByStr20)
+  is_owner = builtin eq sender token_owner;
+  is_approved_for_all <- exists operator_approvals[token_owner][sender];
+  is_authorised = orb is_owner is_approved_for_all;
+  match is_authorised with
+  | True =>
+  | False =>
+    err = CodeNotOwnerOrOperator;
+    ThrowError err
+  end
+end
+
+procedure IsApprovedSpenderOrOperator(token_id: Uint256, token_owner: ByStr20)
+  some_token_approval <- token_approvals[token_id];
+  is_approved = match some_token_approval with
+    | None => False
+    | Some approved_address => 
+      builtin eq _sender approved_address
+    end;
+  is_operator <- exists operator_approvals[token_owner][_sender];
+  is_authorised = orb is_approved is_operator;
+  match is_authorised with
+  | True =>
+  | False =>
+    err = CodeNotApprovedSpenderOrOperator;
+    ThrowError err
+  end
+end
+
+procedure UpdateTokenCount(operation: Operation, address: ByStr20)
+  match operation with
+  | Add =>
+    some_to_count <- owned_token_count[address];
+    new_to_count = 
+      let current_count = option_to_uint256 some_to_count in
+      builtin add current_count uint256_one;
+    owned_token_count[address] := new_to_count
+  | Sub =>
+    some_from_count <- owned_token_count[address];
+    new_from_count = 
+      let current_count = option_to_uint256 some_from_count in
+        let is_zero = builtin eq current_count uint256_zero in
+          match is_zero with
+          | True => uint256_zero
+          | False => builtin sub current_count uint256_one
+          end;
+    owned_token_count[address] := new_from_count
+  end
+end
+
+(* ================== *)
+(* Oracle Transitions *)
+(* ================== *)
+
+transition UnicuteInsertDrandValues(token_id: Uint256, final_unicute: Unicute, token_uri: String)
+  IsOracle;
+  option_token_owner_addr <- token_owners[token_id];
+  match option_token_owner_addr with
+  | None =>
+    err = CodeUnicuteDontExist;
+    ThrowError err
+  | Some token_owner_addr =>
+    init_unicute <- owned_tokens[token_owner_addr][token_id];
+    match init_unicute with
+    | None =>
+      err = CodeUnicuteDontExist;
+      ThrowError err
+    | Some init_unicute =>
+      match final_unicute with
+      | Unicute round index values option_is_legendary =>
+        match init_unicute with
+        | Unicute init_round init_index init_values init_is_legendary =>
+          match init_values with
+          | Some _ =>
+            err = CodeIllegalOperation;
+            ThrowError err
+          | None =>
+          end;
+          (* Safe guard in case something goes wrong in the backend *)
+          IsRandomValueEqual init_round init_index round index;
+          match option_is_legendary with
+          | None => 
+            err = CodeIllegalOperation;
+            ThrowError err
+          | Some is_legendary =>
+            owned_tokens[token_owner_addr][token_id] := final_unicute;
+            token_uris[token_id] := token_uri;
+            e = {
+              _eventname : "UnicuteInsertDrandValues";
+              amount: _amount;
+              is_legendary: is_legendary;
+              token_id: token_id;
+              token_owner: token_owner_addr
+            };
+            event e
+          end
+        end
+      end
+    end
+  end
+end
+
+transition UnicuteInsertDrandTime(token_id: Uint256, unicute: Unicute)
+  IsOracle;
+  option_token_owner_addr <- transit_token_owners[token_id];
+  match option_token_owner_addr with
+  | None => 
+    err = CodeUnicuteDontExist;
+    ThrowError err
+  | Some token_owner_addr =>
+    token_owners[token_id] := token_owner_addr;
+    owned_tokens[token_owner_addr][token_id] := unicute;
+    delete transit_token_owners[token_id];
+    e = {
+      _eventname : "UnicuteInsertDrandTime";
+      amount: _amount;
+      unicute_id: token_id;
+      unicute_owner: token_owner_addr
+    };
+    event e
+  end
+end
+
+(* ================= *)
+(* Proxy Transitions *)
+(* ================= *)
+
+transition CreateUnicute(sender: ByStr20, token_id: Uint256)
+  IsProxy;
+  size <- total_supply;
+  IsMaxSupplyReached size;
+  ProtectAgainstTokenOverwrite token_id;
+  UpdateTokenCount add_operation sender;
+  new_total_supply = builtin add size uint256_one;
+  total_supply := new_total_supply;
+  transit_token_owners[token_id] := sender;
+  e = {
+    _eventname  : "CreateUnicute";
+    amount      : _amount;
+    token_id    : token_id;
+    owner       : sender
+  };
+  event e
+end
+
+
+(* ================= *)
+(* Admin Transitions *)
+(* ================= *)
+
+transition AddProxy(address: ByStr20)
+  IsOwner;
+  whitelisted_proxies[address] := verdad;
+  e = {
+    _eventname  : "AddProxy";
+    amount      : _amount;
+    new_proxy   : address
+  };
+  event e
+end
+
+transition DeleteProxy(address: ByStr20)
+  IsOwner;
+  delete whitelisted_proxies[address];
+  e = {
+    _eventname  : "DeleteProxy";
+    amount      : _amount;
+    new_proxy   : address
+  };
+  event e
+end
+
+transition SetOracle(new_oracle: ByStr20)
+  IsOwner;
+  oracle := new_oracle;
+  e = {
+    _eventname  : "SetOracle";
+    amount      : _amount;
+    new_oracle  : new_oracle
+  };
+  event e
+end
+
+(* ============================ *)
+(* Standard ZRC/NFT Transitions *)
+(* ============================ *)
+
+(* @dev: Get number of NFTs assigned to a token_owner *)
+transition BalanceOf(address: ByStr20)
+  some_bal <- owned_token_count[address];
+  balance = option_to_uint256 some_bal;
+  msg_to_sender = { _tag : "BalanceOfCallBack"; _recipient : _sender; _amount : Uint128 0;
+                   balance : balance};
+  msgs = one_msg msg_to_sender;
+  send msgs
+end
+
+(* @dev: Get total supply of NFTs minted *)
+transition TotalSupply()
+  current_supply <- total_supply;
+  msg_to_sender = { _tag : "TotalSupplyCallBack"; _recipient : _sender; _amount : Uint128 0;
+                   total_supply : current_supply};
+  msgs = one_msg msg_to_sender;
+  send msgs
+end
+
+(* @dev: Get unicute *)
+transition Unicute(owner: ByStr20, token_id: Uint256)
+  some_unicute <- owned_tokens[owner][token_id];
+  match some_unicute with
+  | None =>
+    err = CodeNotFound;
+    ThrowError err
+  | Some unicute =>
+    match unicute with
+    | Unicute round index values option_is_legendary =>
+      msg_to_sender = { _tag : "DrandRoundCallBack"; _recipient : _sender; _amount : Uint128 0; drand_round : round; drand_values: values; legendary: option_is_legendary};
+      msgs = one_msg msg_to_sender;
+      send msgs
+    end
+  end
+end
+
+(* @dev: Get name of the NFTs *)
+transition Name()
+  msg_to_sender = { _tag : "NameCallBack"; _recipient : _sender; _amount : Uint128 0;
+                   name : name};
+  msgs = one_msg msg_to_sender;
+  send msgs
+end
+
+(* @dev: Get name of the NFTs *)
+transition Symbol()
+  msg_to_sender = { _tag : "SymbolCallBack"; _recipient : _sender; _amount : Uint128 0;
+                   symbol : symbol};
+  msgs = one_msg msg_to_sender;
+  send msgs
+end
+
+(* @dev: Get approved_addr for token_id *)
+transition GetApproved(token_id: Uint256)
+  some_token_approval <- token_approvals[token_id];
+  match some_token_approval with
+  | Some addr => 
+    msg_to_sender = { _tag : "GetApprovedCallBack"; _recipient : _sender; _amount : Uint128 0; 
+                      approved_addr : addr; token_id : token_id};
+    msgs = one_msg msg_to_sender;
+    send msgs
+  | None => 
+    err = CodeNotApproved;
+    ThrowError err
+  end
+end
+
+(* @dev: Get the token_uri of a certain token_id *)
+transition GetTokenURI(token_id: Uint256)
+  some_token_uri <- token_uris[token_id];
+  match some_token_uri with
+  | Some token_uri =>
+    msg_to_sender = { _tag : "GetTokenURICallBack"; _recipient : _sender; _amount : Uint128 0; 
+                      token_uri : token_uri};
+    msgs = one_msg msg_to_sender;
+    send msgs
+  | None =>
+    err = CodeNotFound;
+    ThrowError err
+  end
+end
+
+(* @dev: Check if a token_id is owned by a token_owner *)
+transition CheckTokenOwner(token_id: Uint256, address: ByStr20)
+  IsUnicuteOwner token_id address;
+  msg_to_sender = { _tag : "IsTokenOwnerCallBack"; _recipient : _sender; _amount : Uint128 0};
+  msgs = one_msg msg_to_sender;
+  send msgs
+end
+
+(* @dev: Check if address is operator for token_owner *)
+transition CheckApprovedForAll(token_owner: ByStr20, operator: ByStr20)
+  IsApprovedForAll token_owner operator;
+  msg_to_sender = { _tag : "IsApprovedForAllCallBack"; _recipient : _sender; _amount : Uint128 0;
+                    token_owner : token_owner; operator : operator};
+  msgs = one_msg msg_to_sender;
+  send msgs
+end
+
+(* @dev:    Burn existing tokens. Only token_owner or an operator can burn a NFT. *)
+(* @param:  token_id - Unique ID of the NFT to be destroyed                       *)
+transition Burn(token_id: Uint256, sender: ByStr20)
+  IsProxy;
+  (* Check if token exists *)
+  some_token_owner <- token_owners[token_id];
+  match some_token_owner with
+  | None =>
+    err = CodeNotFound;
+    ThrowError err
+  | Some token_owner =>
+    IsOwnerOrOperator token_owner sender;
+    (* Destroy existing token *)
+    delete token_owners[token_id];
+    delete token_approvals[token_id];
+    delete token_uris[token_id];
+    delete owned_tokens[token_owner][token_id];
+    (* Deduct from owned_token_count *)
+    UpdateTokenCount sub_operation token_owner;
+    (* Deduct from total_supply *)
+    current_supply <- total_supply;
+    new_supply = builtin sub current_supply uint256_one;
+    total_supply := new_supply;
+    e = {_eventname: "BurnSuccess"; initiator: _sender; burn_address: token_owner; token_id: token_id};
+    event e;
+    msg_to_sender = { _tag : "BurnCallBack"; _recipient : sender; _amount : Uint128 0;
+                      initiator : _sender; burn_address : token_owner; token_id : token_id };
+    msgs = one_msg msg_to_sender;
+    send msgs
+  end
+end
+
+(* @dev: Approves OR remove an address ability to transfer a given token_id *)
+(* There can only be one approved_spender per token at any given time       *)
+(* param: to       - Address to be approved for the given token_id          *)
+(* param: token_id - Unique ID of the NFT to be approved                    *)
+transition SetApprove(to: ByStr20, token_id: Uint256)
+  some_token_owner <- token_owners[token_id];
+  match some_token_owner with
+  | None =>
+    err = CodeNotFound;
+    ThrowError err
+  | Some token_owner =>
+    IsOwnerOrOperator token_owner _sender;
+    is_approved <- token_approvals[token_id];
+    match is_approved with
+    | Some approved_spender =>
+      (* Remove approved_spender *)
+      is_approved_spender = builtin eq to approved_spender;
+      match is_approved_spender with
+      | True =>
+        delete token_approvals[token_id];
+        e = {_eventname: "RemoveApprovalSuccess"; initiator: _sender; removed_spender: to; token_id: token_id};
+        event e;
+        msg_to_sender = { _tag : "RemoveApprovalSuccessCallBack"; _recipient : _sender; _amount : Uint128 0; 
+                          removed_spender : to; token_id : token_id };
+        msgs = one_msg msg_to_sender;
+        send msgs
+      | False =>
+        err = CodeNotApproved;
+        ThrowError err
+      end
+    | None =>
+      (* Add approved_spender *)
+      token_approvals[token_id] := to;
+      e = {_eventname: "AddApprovalSuccess"; initiator: _sender; approved_spender: to; token_id: token_id};
+      event e;
+      msg_to_sender = { _tag : "AddApprovalSuccessCallBack"; _recipient : _sender; _amount : Uint128 0; 
+                        approved_spender : to; token_id : token_id };
+      msgs = one_msg msg_to_sender;
+      send msgs
+    end
+  end
+end
+
+(* @dev: Sets or unsets an operator for the _sender       *)
+(* @param: to - Address to be set or unset as an operator *)
+transition SetApprovalForAll(to: ByStr20)
+  IsSelf to _sender;
+  is_operator <- exists operator_approvals[_sender][to];
+  match is_operator with
+  | False =>
+    (* Add operator *)
+    operator_approvals[_sender][to] := verdad;
+    e = {_eventname: "AddApprovalForAllSuccess"; initiator: _sender; operator: to};
+    event e
+  | True =>
+    (* Remove operator *)
+    delete operator_approvals[_sender][to];
+    e = {_eventname: "RemoveApprovalForAllSuccess"; initiator: _sender; operator: to};
+    event e
+  end;
+  new_status = negb is_operator;
+  msg_to_sender = { _tag : "SetApprovalForAllSuccessCallBack"; _recipient : _sender; _amount : Uint128 0; 
+                    operator : to; status : new_status};
+  msgs = one_msg msg_to_sender;
+  send msgs
+end
+
+(* @dev: Transfer the ownership of a given token_id to another address. token_owner only transition. *)
+(* @param: to       - Recipient address for the token                                                *)
+(* @param: token_id - Unique ID of the NFT to be transferred                                         *)
+transition Transfer(to: ByStr20, token_id: Uint256)
+  IsSelf to _sender;
+  IsUnicuteOwner token_id _sender;
+  (* Change token_owner for that token_id *)
+  token_owners[token_id] := to;
+  (* change owned_tokens for that token_id *)
+  option_unicute <- owned_tokens[_sender][token_id];
+  match option_unicute with
+  | None =>
+    err = CodeUnicuteDontExist;
+    ThrowError err
+  | Some unicute =>
+    delete owned_tokens[_sender][token_id];
+    owned_tokens[to][token_id] := unicute
+  end;
+  (* Delete tokenApproval entry for that token_id *)
+  delete token_approvals[token_id];
+  (* Subtract one from previous token owner count *)
+  UpdateTokenCount sub_operation _sender;
+  (* Add one to the new token owner count *)
+  UpdateTokenCount add_operation to;
+  e = {_eventname: "TransferSuccess"; from: _sender; recipient: to; token_id: token_id};
+  event e;
+  msg_to_recipient = { _tag : "RecipientAcceptTransfer"; _recipient : to; _amount : Uint128 0; 
+                      from : _sender; recipient : to; token_id : token_id };
+  msg_to_sender = { _tag : "TransferSuccessCallBack"; _recipient : _sender; _amount : Uint128 0; 
+                    from : _sender; recipient : to; token_id : token_id };
+  msgs = two_msgs msg_to_recipient msg_to_sender;
+  send msgs
+end
+
+(* @dev: Transfer the ownership of a given token_id to another address. approved_spender or operator only transition. *)
+(* @param: to       - Recipient address for the NFT                                                                   *)
+(* @param: token_id - Unique ID of the NFT to be transferred                                                          *)
+transition TransferFrom(to: ByStr20, token_id: Uint256)
+  some_token_owner <- token_owners[token_id];
+  match some_token_owner with
+  | None =>
+    err = CodeNotFound;
+    ThrowError err
+  | Some token_owner =>
+    IsSelf to token_owner;
+    IsApprovedSpenderOrOperator token_id token_owner;
+    (* Change token_owner for that token_id *)
+    token_owners[token_id] := to;
+    
+    (* change owned_tokens for that token_id *)
+    option_unicute <- owned_tokens[token_owner][token_id];
+    match option_unicute with
+    | None =>
+      err = CodeUnicuteDontExist;
+      ThrowError err
+    | Some unicute =>
+      delete owned_tokens[token_owner][token_id];
+      owned_tokens[to][token_id] := unicute
+    end;
+    (* Delete tokenApproval entry for that token_id *)
+    delete token_approvals[token_id];
+    (* Subtract one from previous token owner count *)
+    UpdateTokenCount sub_operation token_owner;
+    (* Add one to the new token owner count *)
+    UpdateTokenCount add_operation to;
+    e = {_eventname: "TransferFromSuccess"; from: token_owner; recipient: to; token_id: token_id};
+    event e;
+    msg_to_recipient = { _tag : "RecipientAcceptTransferFrom"; _recipient : to; _amount : Uint128 0; 
+                        from : token_owner; recipient : to; token_id : token_id };
+    msg_to_sender = { _tag : "TransferFromSuccessCallBack"; _recipient : _sender; _amount : Uint128 0; 
+                      from : token_owner; recipient : to; token_id : token_id };
+    msgs = two_msgs msg_to_recipient msg_to_sender;
+    send msgs
+  end
+end

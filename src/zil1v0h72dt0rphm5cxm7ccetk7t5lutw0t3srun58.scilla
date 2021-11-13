@@ -1,0 +1,73 @@
+(* CompoundRegistry *)
+
+(***************************************************)
+(*                 Scilla version                  *)
+(***************************************************)
+
+scilla_version 0
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+library CompoundRegistry
+
+let one_msg =
+  fun (msg: Message) =>
+  let nil_msg = Nil {Message} in
+  Cons {Message} msg nil_msg
+
+let true = True
+let false = False
+
+(* Error exception *)
+type Error =
+  | CodeNotContractOwner
+  
+let make_error =
+fun (result : Error) =>
+  let result_code = 
+    match result with
+    | CodeNotContractOwner  => Int32 -1
+    end
+  in
+  { _exception : "CompoundRegistryError"; code : result_code }
+  
+contract CompoundRegistry
+(
+  owner : ByStr20
+)
+
+field tokens: Map ByStr20 Bool = Emp ByStr20 Bool
+
+(* Emit Errors *)
+procedure ThrowError(err : Error)
+  e = make_error err;
+  throw e
+end
+
+
+procedure ThrowNotSenderIsOwner()
+  is_owner = builtin eq _sender owner;
+  match is_owner with
+  | True =>
+  | False =>
+    err = CodeNotContractOwner;
+    ThrowError err
+  end
+end
+
+
+transition Register(token: ByStr20)
+  ThrowNotSenderIsOwner;
+  tokens[token] := true;
+  e = {_eventname : "Registered"; token : token};
+  event e
+end
+
+transition Unregister(token: ByStr20)
+  ThrowNotSenderIsOwner;
+  delete tokens[token];
+  e = {_eventname : "Unregistered"; token : token};
+  event e
+end
+

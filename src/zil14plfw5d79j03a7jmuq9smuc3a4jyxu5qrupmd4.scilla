@@ -1,0 +1,417 @@
+(* Button *)
+
+(***************************************************)
+(*                 Scilla version                  *)
+(***************************************************)
+
+scilla_version 0
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+import IntUtils BoolUtils
+library Button
+
+let one_msg =
+  fun (msg: Message) =>
+  let nil_msg = Nil {Message} in
+  Cons {Message} msg nil_msg
+
+
+type Winner =
+  | Winner of ByStr20 Uint128 Uint128 BNum 
+
+  
+(* Error exception *)
+type Error =
+  | CodeNotOwner
+  | CodeNotOwnerOrOperator
+  | CodeNotPendingOwner
+  | CodeInvalidOperation
+  | CodeInvalidClaim
+  | CodeInvalidContribute
+  | CodeIsPaused
+  
+  
+let make_error =
+fun (result : Error) =>
+  let result_code = 
+    match result with
+    | CodeNotOwner           => Int32 -1
+    | CodeNotOwnerOrOperator => Int32 -2
+    | CodeNotPendingOwner    => Int32 -3
+    | CodeInvalidOperation   => Int32 -4
+    | CodeInvalidClaim       => Int32 -5
+    | CodeInvalidContribute  => Int32 -6
+    | CodeIsPaused           => Int32 -7
+    end
+  in
+  { _exception : "ButtonError"; code : result_code }
+  
+let zero128 = Uint128 0 
+let zero256 = Uint256 0 
+let one256  = Uint256 1 
+let zil_address = 0x0000000000000000000000000000000000000000
+let win_denom = Uint128 10000
+let true = True
+let false = False
+
+let optional_value =
+  tfun 'A =>
+  fun (default: 'A) =>
+  fun (opt_val: Option 'A) =>
+    match opt_val with
+    | Some v => v
+    | None => default
+    end
+    
+let muldiv =
+  fun (a: Uint128) =>
+  fun (b: Uint128) =>
+  fun (c: Uint128) =>
+    let opt = @optional_value Uint256 in
+    let opt2 = @optional_value Uint128 in
+    let oa = builtin to_uint256 a in let ha = opt zero256 oa in
+    let ob = builtin to_uint256 b in let hb = opt zero256 ob in
+    let oc = builtin to_uint256 c in let hc = opt zero256 oc in
+    let num = builtin mul ha hb in
+    let hv =  builtin div num hc in
+    let ov = builtin to_uint128 hv in
+      opt2 zero128 ov
+      
+contract Button
+(
+  initial_owner: ByStr20,
+  initial_stack_price: Uint128,
+  initial_claim_delay: Uint32,
+  initial_claim_expire: Uint32,
+  initial_win_share: Uint128,
+  token: ByStr20
+)
+
+field owner : ByStr20 = initial_owner
+field pending_owner : ByStr20 = zil_address
+
+field total_stack: Uint128 = zero128
+field current_winner: ByStr20 =  zil_address
+field claim_block: BNum = _creation_block
+field expire_block: BNum = _creation_block
+field stack_price: Uint128 = initial_stack_price
+field claim_delay: Uint32 = initial_claim_delay
+field claim_expire: Uint32 = initial_claim_expire
+field win_share: Uint128 = initial_win_share
+
+field winners: Map Uint256 Winner = Emp Uint256 Winner
+field winners_count: Uint256 = zero256
+
+field operators: Map ByStr20 Bool
+  = Emp ByStr20 Bool
+  
+field paused: Bool = true
+
+(* Emit Errors *)
+procedure ThrowError(err : Error)
+  e = make_error err;
+  throw e
+end
+
+procedure ThrowUnlessSenderIsOwner()
+  current_owner <- owner;
+  is_owner = builtin eq _sender current_owner;
+  match is_owner with
+  | True =>
+  | False =>
+    err = CodeNotOwner;
+    ThrowError err
+  end
+end
+
+procedure ThrowUnlessSenderIsOwnerOrOperator()
+  current_owner <- owner;
+  maybe_operator <- operators[_sender];
+  is_owner = builtin eq _sender current_owner;
+  is_allowed = let opt = @optional_value Bool in
+               let is_operator = opt false maybe_operator in
+               orb is_operator is_owner;
+  match is_allowed with
+  | True =>
+  | False =>
+    err = CodeNotOwnerOrOperator;
+    ThrowError err
+  end
+end
+
+procedure ThrowIfPaused()
+  is_paused <- paused;
+  match is_paused with
+  | False =>
+  | True =>
+    err = CodeIsPaused;
+    ThrowError err
+  end
+end
+
+procedure ReceiveToken(amount: Uint128)
+  msg_to_token = {
+    _tag : "TransferFrom"; _recipient: token; _amount: zero128;
+    from: _sender; to: _this_address; amount: amount
+  };
+  msgs = one_msg msg_to_token;
+  send msgs
+end
+
+procedure WriteWinner(winner: Winner)
+  counter <- winners_count;
+  winners[counter] := winner;
+  new_counter = builtin add counter one256;
+  winners_count := new_counter
+end
+
+procedure SendToken(amount: Uint128, to_address : ByStr20)
+  msg_to_token =  {
+    _tag : "Transfer"; _recipient: token; _amount: zero128;
+    to: to_address; amount: amount
+  };
+  msgs = one_msg msg_to_token;
+  send msgs
+end
+
+transition Contribute()
+  ThrowIfPaused;
+  b <- &BLOCKNUMBER;
+  
+  winner <- current_winner;
+  cb <- claim_block;
+  eb <- expire_block;
+  is_valid = 
+    let is_winner         = builtin eq _sender winner in
+    let is_before_claim   = builtin blt b cb in
+    let is_before_expire  = builtin blt b eb in
+    let is_after_expire   = negb is_before_expire in
+    let is_time           = orb is_before_claim is_after_expire in
+    let is_win_before     = andb is_winner is_before_claim in
+    let is_not_win_before = negb is_win_before in
+    andb is_time is_not_win_before;
+  match is_valid with
+  | True =>
+  | False =>
+    err = CodeInvalidContribute;
+    ThrowError err
+  end;
+  stack_price_var <- stack_price;
+  ReceiveToken stack_price_var;
+  
+  claim_delay_var <- claim_delay;
+  claim_expire_var <- claim_expire;
+  
+  old_stack <- total_stack;
+  new_stack = builtin add old_stack stack_price_var;
+  total_stack := new_stack;
+  current_winner := _sender;
+  new_cb = builtin badd b claim_delay_var;
+  claim_block := new_cb;
+  new_eb = builtin badd new_cb claim_expire_var;
+  expire_block := new_eb;
+  e = {_eventname : "Contributed"; user : _sender; 
+       block: b;
+       claim_block: new_cb; expire_block: new_eb; 
+       stack_size: new_stack };
+  event e
+end
+
+transition Claim()
+  ThrowIfPaused;
+  b <- &BLOCKNUMBER;
+  
+  winner <- current_winner;
+  cb <- claim_block;
+  eb <- expire_block;
+  is_valid = 
+    let is_winner        = builtin eq _sender winner in
+    let is_before_claim  = builtin blt b cb in
+    let is_after_claim   = negb is_before_claim in
+    let is_before_expire = builtin blt b eb in
+    let in_time          = andb is_after_claim is_before_expire in
+    andb in_time is_winner;
+  match is_valid with
+  | True =>
+  | False =>
+    err = CodeInvalidClaim;
+    ThrowError err
+  end;
+  win_share_var <- win_share;
+  total_win <- total_stack;
+  reward = muldiv total_win win_share_var win_denom;
+  new_stack = builtin sub total_win reward;
+  claim_block    := b;
+  expire_block   := b;
+  total_stack    := new_stack;
+  current_winner := zil_address;
+ 
+  win_record = Winner _sender reward new_stack b;
+  WriteWinner win_record;
+ 
+  SendToken reward _sender;
+  e = {_eventname : "Claimed"; user : _sender; 
+      block: b; reward: reward; stack_size: new_stack };
+  event e
+end
+
+(*Operator Ops*)
+transition WarmUp(amount: Uint128)
+  ThrowUnlessSenderIsOwnerOrOperator;
+  ReceiveToken amount;
+  b <- &BLOCKNUMBER;
+  old_stack <- total_stack;
+  new_stack = builtin add old_stack amount;
+  total_stack := new_stack;
+  e = {_eventname : "Warmed"; user : _sender; stack_size: new_stack };
+  event e
+end
+
+transition Start()
+  ThrowUnlessSenderIsOwnerOrOperator;
+  paused  := false;
+  e = { _eventname: "Started" };
+  event e
+end
+
+transition Pause()
+  ThrowUnlessSenderIsOwnerOrOperator;
+  paused  := true;
+  e = { _eventname: "Paused" };
+  event e
+end
+
+transition UpdateClaimBlocks(delay: Uint32, expire: Uint32)
+  ThrowUnlessSenderIsOwnerOrOperator;
+  claim_delay  := delay;
+  claim_expire := expire;
+  e = { _eventname: "ClaimBlocksUpdated"; 
+    claim_delay: delay; claim_expire:expire };
+  event e
+end
+
+transition UpdateWinShare(share: Uint128)
+  ThrowUnlessSenderIsOwnerOrOperator;
+  is_bad = uint128_gt share win_denom;
+  match is_bad with
+    | False =>
+    | True => 
+      err = CodeInvalidOperation;
+      ThrowError err
+  end;
+  win_share  := share;
+  e = { _eventname: "WinShareUpdated"; 
+    win_share: share };
+  event e
+end
+
+transition UpdateStackPrice(price: Uint128)
+  ThrowUnlessSenderIsOwnerOrOperator;
+  stack_price  := price;
+  e = { _eventname: "StackPriceUpdated"; 
+    stack_price: price };
+  event e
+end
+
+(*Owner Ops*)
+transition AddOperator(operator: ByStr20)
+  ThrowUnlessSenderIsOwner;
+  is_operator <- operators[operator];
+  match is_operator with
+  | None =>
+  | Some val => 
+    err = CodeInvalidOperation;
+    ThrowError err
+  end;
+  operators[operator] := true;
+  e = {_eventname : "OperatorAdded"; operator : operator};
+  event e
+end
+
+transition RemoveOperator(operator: ByStr20)
+  ThrowUnlessSenderIsOwner;
+  is_operator <- operators[operator];
+  match is_operator with
+  | Some val => 
+  | None =>
+    err = CodeInvalidOperation;
+    ThrowError err
+  end;
+  delete operators[operator];
+  e = {_eventname : "OperatorRemoved"; operator : operator};
+  event e
+end
+
+(* Ownership *)
+transition TransferOwnership(
+  new_owner : ByStr20
+)
+  ThrowUnlessSenderIsOwner;
+  existing_owner <- owner;
+  new_owner_is_existing_owner = builtin eq new_owner existing_owner;
+  match new_owner_is_existing_owner with
+  | True =>
+    err = CodeInvalidOperation;
+    ThrowError err
+  | False =>
+    pending_owner := new_owner
+  end
+end
+
+transition AcceptPendingOwnership()
+  new_owner <- pending_owner;
+  sender_is_pending_owner = builtin eq _sender new_owner;
+  match sender_is_pending_owner with
+  | False =>
+    err = CodeNotPendingOwner;
+    ThrowError err
+  | True =>
+    owner := new_owner;
+    pending_owner := zil_address;
+    e = { _eventname: "OwnershipTransferred"; owner: new_owner };
+    event e
+  end
+end
+
+(***************************************)
+(*             Callbacks               *)
+(***************************************)
+
+
+transition RecipientAcceptTransferFrom(
+  initiator : ByStr20,
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+  is_valid_transfer_to_self =
+    let self_triggered = builtin eq initiator _this_address in
+    let is_transfer_to_self = builtin eq recipient _this_address in
+    andb self_triggered is_transfer_to_self;
+
+  match is_valid_transfer_to_self with
+  | False =>
+    err = CodeInvalidOperation;
+    ThrowError err
+  | True => (* noop *)
+  end
+end
+
+transition TransferFromSuccessCallBack(
+  initiator : ByStr20,
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+  (*Do nothing*)
+end
+
+transition TransferSuccessCallBack(
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+  (*Do nothing*)
+end
