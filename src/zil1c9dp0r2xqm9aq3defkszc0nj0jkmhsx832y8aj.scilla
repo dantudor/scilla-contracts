@@ -1,0 +1,78 @@
+scilla_version 0
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+
+import BoolUtils
+
+library PM
+
+let one_msg = 
+  fun (msg : Message) => 
+    let nil_msg = Nil {Message} in
+    Cons {Message} msg nil_msg
+    
+
+let got_funds_code  = Int32 6
+  
+ 
+
+ 
+(***************************************************)
+(*             The contract definition             *)
+(***************************************************)
+contract PM
+
+(*  Parameters *)
+(owner     : ByStr20)
+
+ (* fee is 0.5 ZIL *) 
+field feepermessage :  Uint128 =  Uint128  500000000000 
+ 
+
+transition GetFunds ()
+  is_owner = builtin eq owner _sender;
+  bal <- _balance;
+  match is_owner with
+  | False => 
+     throw
+  | True => 
+      
+      msg  = {_tag : ""; _recipient : owner; _amount :bal; 
+              code : got_funds_code};
+      msgs = one_msg msg;
+      send msgs
+    
+  end   
+end
+
+
+transition SetFee ( setfeeamount : Uint128  )
+  is_owner = builtin eq owner _sender;
+   
+  match is_owner with
+  | False => 
+     throw
+  | True => 
+     feepermessage := setfeeamount;
+      e = {_eventname : "SETFEE"; fee: setfeeamount};
+      event e        
+  end   
+end
+ 
+ 
+transition SetMessage (msg : String)  
+  fee <- feepermessage;
+  enough_amt = builtin lt fee _amount;
+  accept;
+  match enough_amt with
+  | False => 
+      throw
+  | True => 
+      e = {_eventname : "MSG"; msg : msg};
+      event e    
+     
+  end   
+ 
+end

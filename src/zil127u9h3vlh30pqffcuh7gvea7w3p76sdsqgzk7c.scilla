@@ -1,0 +1,140 @@
+(* Gramchain Contract - Little bit *)
+(* This contract allows owner to post hashes on the gramchain network *)
+
+scilla_version 0
+
+import BoolUtils ListUtils
+
+library Gramchain
+
+let one_msg = 
+  fun (msg : Message) => 
+  let nil_msg = Nil {Message} in
+  Cons {Message} msg nil_msg
+
+(* Status codes *)
+let not_owner_code = Uint32 0
+let hash_does_not_exist_code = Uint32 1
+let is_owner = Uint32 1
+let hash_exists_code = Uint32 2
+let added_hash_code = Uint32 3
+
+let zero = Uint128 0
+let true = True
+
+contract Gramchain(default_contract_owner: ByStr20)
+
+field gramHashes: Map ByStr32 Bool
+    = Emp ByStr32 Bool
+field contract_owner: ByStr20 
+    = default_contract_owner
+field pending_owner : Option ByStr20 
+    = None {ByStr20}
+
+(* @dev Procedure to verify the owner *)
+procedure isOwner()
+local_contract_owner <- contract_owner;
+sender_is_owner = builtin eq _sender local_contract_owner;
+  match sender_is_owner with
+   | True =>
+     msg = {_tag: ""; _recipient: _sender; _amount: zero; code: is_owner};
+     msgs = one_msg msg;
+     send msgs
+   | False =>
+     msg = {_tag: ""; _recipient: _sender; _amount: zero; code: not_owner_code};
+     msgs = one_msg msg;
+     send msgs
+  end
+end
+
+(* @dev Procedure to add a hash entry *)
+(* @dev if code > 1 then hash is successfully added *)
+procedure add_hash_entry(gram_hash: ByStr32)
+local_contract_owner <- contract_owner;
+sender_is_owner = builtin eq _sender local_contract_owner;
+  match sender_is_owner with
+   | True =>
+     (* Check if the hash already exists *)
+     hash_exists <- exists gramHashes[gram_hash];
+     match hash_exists with
+     | True =>
+       msg = {_tag: ""; _recipient: _sender; _amount: zero; code: hash_exists_code};
+       msgs = one_msg msg;
+       send msgs
+     | False =>
+       gramHashes[gram_hash] := true;
+       msg = {_tag: ""; _recipient: _sender; _amount: zero; code: added_hash_code};
+       msgs = one_msg msg;
+       send msgs;
+       e = { _eventname : "AddedHashEntry"; hash: gram_hash };
+       event e
+     end
+   | False =>
+     msg = {_tag: ""; _recipient: _sender; _amount: zero; code: not_owner_code};
+     msgs = one_msg msg;
+     send msgs
+  end
+end
+
+(* @dev Request transfer ownership of contract by the current owner *)
+transition RequestOwnershipTransfer (new_owner: ByStr20)
+  isOwner;
+  po = Some {ByStr20} new_owner;
+  pending_owner := po
+end
+
+(* @dev New owner confirms transfer *)
+transition ConfirmOwnershipTransfer ()
+  optional_po <- pending_owner;
+  match optional_po with
+  | Some pend_owner =>
+      caller_is_new_owner = builtin eq _sender pend_owner;
+      match caller_is_new_owner with
+      | True =>
+          (* transfer ownership *)
+          e = { _eventname : "OwnershipTransferred"; current_owner: pend_owner };
+          event e;
+          contract_owner := pend_owner;
+          none = None {ByStr20};
+          pending_owner := none
+      | False => 
+        msg = {_tag: ""; _recipient: _sender; _amount: zero; code: not_owner_code};
+        msgs = one_msg msg;
+        send msgs
+      end
+  | None => (* ownership transfer is not in-progress, do nothing *)
+  end
+end
+
+(* @dev Add a hash entry *)
+transition addHashEntry (gram_hash: ByStr32)
+  add_hash_entry gram_hash
+end
+
+(* @dev Add multiple hash entries *)
+transition addHashEntries (gram_hash_list: List ByStr32)
+  forall gram_hash_list add_hash_entry
+end
+
+(* Getter transitions *)
+
+(* @dev Verify that a hash entry exists *)
+transition verifyDataHash (gram_hash: ByStr32)
+hash_exists <- exists gramHashes[gram_hash];
+    match hash_exists with
+     | True =>
+       msg = {_tag: ""; _recipient: _sender; _amount: zero; code: hash_exists_code};
+       msgs = one_msg msg;
+       send msgs
+     | False =>
+       gramHashes[gram_hash] := true;
+       msg = {_tag: ""; _recipient: _sender; _amount: zero; code: hash_does_not_exist_code};
+       msgs = one_msg msg;
+       send msgs
+    end
+end
+
+(* @dev Verify whether the sender is the owner *)
+transition isOwnerCheck ()
+  isOwner
+end

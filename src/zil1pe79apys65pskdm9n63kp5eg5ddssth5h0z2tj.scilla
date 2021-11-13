@@ -1,0 +1,756 @@
+scilla_version 0
+
+(*Utils*)
+import BoolUtils 
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+library AvatarReservation
+let one_msg =
+  fun (msg: Message) =>
+  let nil_msg = Nil {Message} in
+  Cons {Message} msg nil_msg
+  
+let two_msgs =
+fun (msg1 : Message) =>
+fun (msg2 : Message) =>
+  let msgs_tmp = one_msg msg2 in
+  Cons {Message} msg1 msgs_tmp
+  
+let usernameExists = Int32 1
+let usernameAvailable = Int32 2
+let amountPaidWrong = Int32 3
+let notOwner = Int32 4
+let priceUpdated = Int32 5
+let withdrawZil = Int32 6
+let emptyValue = Int32 7
+let newOwner = Int32 8
+let nameDoesNotExists = Int32 9
+let referralAdded = Int32 10
+let referralFeeSent = Int32 11
+let vipValueNull = Int32 12
+let feeUpdated = Int32 13
+let vipAdded = Int32 14
+let vipRemoved = Int32 15
+let bannedName = Int32 16
+let unbannedName = Int32 17
+let nameIsBanned = Int32 18
+let noPending = Int32 19
+let transitionUpdated = Int32 20
+let carbAddrUpdated = Int32 21
+let nameTaken = Int32 22
+
+let allowBlocks = BNum 0
+let pendingBlocks = BNum 50
+
+
+let allowance = Uint128 1000000000000000
+let zero = Uint128 0
+let hundred = Uint128 100
+let true = True
+let false = False
+let empty = "Empty"
+(* fee is 1 QA *)
+let qa_fee = Uint128 1
+(* fee is 1 LI *)
+let li_fee = Uint128 1000000
+(* fee is 1 ZIL *)
+let zil_fee = Uint128 1000000000000
+
+let get_val =
+  fun (some_val: Option BNum) =>
+    match some_val with
+    | Some val => val
+    | None => allowBlocks
+    end
+    
+
+let blk_leq =
+  fun (blk1 : BNum) =>
+  fun (blk2 : BNum) =>
+    let bc1 = builtin blt blk1 blk2 in 
+    let bc2 = builtin eq blk1 blk2 in 
+    orb bc1 bc2
+
+contract Avatar
+(
+  initial_owner : ByStr20,
+  carbonContract : ByStr20
+)
+field current_owner : ByStr20 = initial_owner
+field pending_owner : Option ByStr20 = None {ByStr20}
+
+(*Name of Avatar mapped to Wallet Address of Avatar Owner*)
+field nameOwner : Map String ByStr20 = Emp String ByStr20
+(*Allows future proxy contract to change the status if migrated*)
+field futureTransition : Map String Bool = Emp String Bool
+(*Banned Name List*)
+field bannedNames : Map String String = Emp String String
+(*Tag VIP NFTs Holder within the ecosystem*)
+field isVIP : Map ByStr20 Bool = Emp ByStr20 Bool
+(*Check if Carb is Paid before creating Avatar*)
+field pendingCarb : Map ByStr20 String = Emp ByStr20 String
+(*Pending amount*)
+field pendingAmount: Map ByStr20 Uint128 = Emp ByStr20 Uint128
+
+
+(*Check if carbon been paid by other users*)
+field paid_while_pending : Map String ByStr20 = Emp String ByStr20
+
+
+(*Referral Fee set to 20%*)
+field referralFee : Uint128 = Uint128 20
+(*VIP Rate*)
+field vipFee: Uint128 = Uint128 30
+
+
+
+(*Initial price of 1,000 ZIL*)
+field priceForAvatar : Uint128 = Uint128 1000000000000000
+(*Initial price of 100 Carb*)
+field carbPriceForAvatar : Uint128 = Uint128 10000000000
+field carbonContractAddr : ByStr20 = carbonContract
+
+
+transition reserveNameWithZil (name: String, referralName: String)
+  name_owner <- nameOwner;
+  name_exists = builtin contains name_owner name;
+  match name_exists with
+    | True =>
+      msg  = {_tag : "Name has been reserved"; _recipient : _sender; _amount : Uint128 0; 
+              code : usernameExists};
+      msgs = one_msg msg;
+      send msgs
+    | False =>
+      banned <- bannedNames;
+      isBanned = builtin contains banned name;
+      match isBanned with
+        | False =>
+          sentAmount = _amount;
+          priceOfAvatar <- priceForAvatar;
+          exactPrice = builtin eq priceOfAvatar sentAmount;
+          match exactPrice with
+            | True =>
+              accept;
+              onePercent = builtin div sentAmount hundred;
+              nameOwner[name] := _sender;
+              futureTransition[name] := false;
+              addressStored <- paid_while_pending[name];
+              match addressStored with
+                | Some addressStored =>
+                  delete paid_while_pending[name];
+                  delete pendingCarb[addressStored];
+                  delete pendingAmount[addressStored]
+                | None =>
+              end;
+              alreadyVIP <- isVIP;
+              vipExists = builtin contains alreadyVIP _sender;
+              match vipExists with
+                | True =>
+                | False =>
+                  isVIP[_sender] := false
+              end;
+              isEmpty = builtin eq empty referralName;
+              match isEmpty with
+                | False =>
+                  referral_exists = builtin contains name_owner referralName;
+                  match referral_exists with
+                    | True =>
+                      referralAddr <- nameOwner[referralName];
+                      match referralAddr with
+                        | Some referralAddr =>
+                          vip <- isVIP[referralAddr];
+                          match vip with
+                            | Some vip =>
+                              match vip with
+                                | True =>
+                                  (*VIP FEE*)
+                                  fee <- vipFee;
+                                  vipGetFee = builtin mul onePercent fee;
+                                  msg  = {_tag : ""; _recipient : referralAddr; _amount : vipGetFee; 
+                                          code : referralFeeSent};
+                                  msgs = one_msg msg;
+                                  send msgs;
+                                  
+                                  msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0; 
+                                      code : usernameAvailable};
+                                  msgs = one_msg msg;
+                                  send msgs
+                                  
+                                | False =>
+                                  (*Non VIP Fee*)
+                                  fee <- referralFee;
+                                  normalFee = builtin mul onePercent fee;
+                                  msg  = {_tag : ""; _recipient : referralAddr; _amount : normalFee; 
+                                          code : referralFeeSent};
+                                  msgs = one_msg msg;
+                                  send msgs;
+                                  
+                                  msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0; 
+                                      code : usernameAvailable};
+                                  msgs = one_msg msg;
+                                  send msgs
+                                  
+                              end
+                            | None =>
+                              (*VIP Value not set*)
+                              fee <- referralFee;
+                              normalFee = builtin mul onePercent fee;
+                              msg  = {_tag : ""; _recipient : referralAddr; _amount : normalFee; 
+                                      code : referralFeeSent};
+                              msgs = one_msg msg;
+                              send msgs;
+                              
+                              msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0; 
+                                  code : usernameAvailable};
+                              msgs = one_msg msg;
+                              send msgs
+                          end
+                        | None =>
+                          (*No ReferralAddress Returned*)
+                          msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0; 
+                              code : usernameAvailable};
+                          msgs = one_msg msg;
+                          send msgs
+                      end
+                    | False =>
+                      msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0; 
+                              code : nameDoesNotExists};
+                      msgs = one_msg msg;
+                      send msgs
+                  end
+                | True =>
+                  msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0;
+                                code : usernameAvailable};
+                  msgs = one_msg msg;
+                  send msgs
+              end
+            | False =>
+              msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0;
+                                code : amountPaidWrong};
+              msgs = one_msg msg;
+              send msgs
+          end
+        | True =>
+          (*Name is banned unable to register*)
+          msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0;
+                  code : nameIsBanned};
+          msgs = one_msg msg;
+          send msgs
+      end
+      
+  end
+end
+
+(*After the unlock carbs is pressed, a pay carbs button should appear clicking on it links to this*)
+transition reserveNameWithCarbs(name: String, referralName: String)
+  name_owner <- nameOwner;
+  owner <- current_owner;
+  price <- carbPriceForAvatar;
+  carbAddr <- carbonContractAddr;
+  name_exists = builtin contains name_owner name;
+  onePercent = builtin div price hundred;
+  match name_exists with
+    | True =>
+      msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0; 
+              code : usernameExists};
+      msgs = one_msg msg;
+      send msgs
+    | False =>
+      banned <- bannedNames;
+      isBanned = builtin contains banned name;
+      match isBanned with
+        | False =>
+          alreadyVIP <- isVIP;
+          vipExists = builtin contains alreadyVIP _sender;
+          match vipExists with
+            | True =>
+            | False =>
+              isVIP[_sender] := false
+          end;
+          (*Adds into the pending list, only if pending is paid then add within transition below*)
+          pendingCarb[_sender] := name;
+          (*Add a pending amount map to sender wallet*)
+          
+          ifExists <- paid_while_pending[name];
+          match ifExists with
+            | Some ifExists =>
+              delete pendingCarb[ifExists];
+              paid_while_pending[name] := _sender
+            | None =>
+              paid_while_pending[name] := _sender
+          end;
+          sending_to <- paid_while_pending[name];
+          referral_exists = builtin contains name_owner referralName;
+          match referral_exists with
+            | True =>
+              referralAddr <- nameOwner[referralName];
+              match referralAddr with
+                | Some referralAddr =>
+                  vip_status <- isVIP[referralAddr];
+                  match sending_to with
+                    | Some sending_to =>
+                      match vip_status with
+                        | Some vip_status =>
+                          match vip_status with
+                            | True =>
+                              fee <- vipFee;
+                              vipRate = builtin mul onePercent fee;
+                              ownerFee = builtin sub price vipRate;
+                              pendingAmount[_sender] := ownerFee;
+                              msg_to_owner = {_tag : "TransferFrom"; _recipient: carbAddr; _amount: zero;
+                                    from: _sender; to: owner; amount: ownerFee};
+                              msg_to_referral = {_tag : "TransferFrom"; _recipient: carbAddr; _amount: zero;
+                                     from: _sender; to: referralAddr; amount: vipRate};
+    
+                              msgs = two_msgs msg_to_owner msg_to_referral;
+                              send msgs
+                            | False =>
+                              fee <- referralFee;
+                              normalRate = builtin mul onePercent fee;
+                              ownerFee = builtin sub price normalRate;
+                              pendingAmount[_sender] := ownerFee;
+                              msg_to_owner = {_tag : "TransferFrom"; _recipient: carbAddr; _amount: zero;
+                                      from: _sender; to: owner; amount: ownerFee};
+                              msg_to_referral = {_tag : "TransferFrom"; _recipient: carbAddr; _amount: zero;
+                                      from: _sender; to: referralAddr; amount: normalRate};
+                              msgs = two_msgs msg_to_owner msg_to_referral;
+                              send msgs
+                          end
+                        | None =>
+                      end
+                    | None =>
+                  end
+                  
+                | None =>
+                  msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0;
+                            code : usernameAvailable};
+                  msgs = one_msg msg;
+                  send msgs
+              end
+            | False =>
+              (*Mistyped referral or referral is non existent*)
+              (*Full payment to owner*)
+              pendingAmount[_sender] := price;
+              msg_to_owner = {_tag : "TransferFrom"; _recipient: carbAddr; _amount: zero;
+                              from: _sender;to: owner; amount: price};
+              msgs = one_msg msg_to_owner;
+              send msgs
+      end
+          
+        | True =>
+          (*Name is banned unable to register*)
+          msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0;
+                  code : nameIsBanned};
+          msgs = one_msg msg;
+          send msgs
+      end
+  end
+end
+
+transition ownerReservation(walletAddr: ByStr20, name: String)
+  owner <- current_owner;
+  isOwner = builtin eq owner _sender;
+  match isOwner with
+    | True =>
+      accept;
+      name_owner <- nameOwner;
+      name_exists = builtin contains name_owner name;
+      match name_exists with
+        | True =>
+          msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0; 
+              code : usernameExists};
+          msgs = one_msg msg;
+          send msgs
+        | False =>
+          banned <- bannedNames;
+          isBanned = builtin contains banned name;
+          match isBanned with
+            | False =>
+              nameOwner[name] := walletAddr;
+              futureTransition[name] := false;
+              msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0;
+                                code : usernameAvailable};
+              msgs = one_msg msg;
+              send msgs
+            | True =>
+              (*Name is banned unable to register*)
+              msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0;
+                                    code : nameIsBanned};
+              msgs = one_msg msg;
+              send msgs
+          end
+      end
+    | False =>
+      msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0;
+                            code : notOwner};
+      msgs = one_msg msg;
+      send msgs
+  end
+end
+
+transition updateZilPrice(price: Uint128)
+  owner <- current_owner;
+  isOwner = builtin eq owner _sender;
+  match isOwner with
+    | True =>
+      priceForAvatar := price;
+      msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0;
+                            code : priceUpdated};
+      msgs = one_msg msg;
+      send msgs
+    | False =>
+      msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0;
+                            code : notOwner};
+      msgs = one_msg msg;
+      send msgs
+  end
+end
+
+transition updateCarbAddress(addr: ByStr20)
+  owner <- current_owner;
+  isOwner = builtin eq owner _sender;
+  match isOwner with
+    | True =>
+      carbonContractAddr := addr;
+      msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0;
+              code : carbAddrUpdated};
+      msgs = one_msg msg;
+      send msgs
+    | False =>
+      msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0;
+              code : notOwner};
+      msgs = one_msg msg;
+      send msgs
+  end
+end
+
+transition updateCarbPrice(price: Uint128)
+  owner <- current_owner;
+  isOwner = builtin eq owner _sender;
+  match isOwner with
+    | True =>
+      carbPriceForAvatar := price;
+      msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0;
+              code : priceUpdated};
+      msgs = one_msg msg;
+      send msgs
+    | False =>
+      msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0;
+                            code : notOwner};
+      msgs = one_msg msg;
+      send msgs
+  end
+end
+
+transition updateFee(amount: Uint128)
+  owner <- current_owner;
+  isOwner = builtin eq owner _sender;
+  match isOwner with
+    | True =>
+      referralFee := amount;
+      msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0;
+                            code : feeUpdated};
+      msgs = one_msg msg;
+      send msgs
+    | False =>
+      msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0;
+                            code : notOwner};
+      msgs = one_msg msg;
+      send msgs
+  end
+end
+
+transition updateTransition(name: String)
+  owner <- current_owner;
+  isOwner = builtin eq owner _sender;
+  match isOwner with
+    | True =>
+      futureTransition[name] := true;
+      msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0;
+                            code : transitionUpdated};
+      msgs = one_msg msg;
+      send msgs
+    | False =>
+      msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0;
+                            code : notOwner};
+      msgs = one_msg msg;
+      send msgs
+  end
+end
+
+transition updateVipFee(amount: Uint128)
+  owner <- current_owner;
+  isOwner = builtin eq owner _sender;
+  match isOwner with
+    | True =>
+      vipFee := amount;
+      msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0;
+                            code : feeUpdated};
+      msgs = one_msg msg;
+      send msgs
+    | False =>
+      msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0;
+                            code : notOwner};
+      msgs = one_msg msg;
+      send msgs
+  end
+end
+
+transition addVip(addr: ByStr20)
+  owner <- current_owner;
+  isOwner = builtin eq owner _sender;
+  match isOwner with
+    | True =>
+      isVIP[addr] := true;
+      msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0;
+                            code : vipAdded};
+      msgs = one_msg msg;
+      send msgs
+    | False =>
+      msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0;
+                            code : notOwner};
+      msgs = one_msg msg;
+      send msgs
+  end
+end
+
+transition removeVip(addr: ByStr20)
+  owner <- current_owner;
+  isOwner = builtin eq owner _sender;
+  match isOwner with
+    | True =>
+      isVIP[addr] := false;
+      msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0;
+                            code : vipRemoved};
+      msgs = one_msg msg;
+      send msgs
+    | False =>
+      msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0;
+                            code : notOwner};
+      msgs = one_msg msg;
+      send msgs
+  end
+end
+
+transition addBannedNames(name: String)
+  owner <- current_owner;
+  isOwner = builtin eq owner _sender;
+  match isOwner with
+    | True =>
+      (*Edit to banned names*)
+      bannedNames[name] := name;
+      msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0;
+                            code : bannedName};
+      msgs = one_msg msg;
+      send msgs
+    | False =>
+      msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0;
+                            code : notOwner};
+      msgs = one_msg msg;
+      send msgs
+  end
+end
+
+transition removeBannedNames(name: String)
+  owner <- current_owner;
+  isOwner = builtin eq owner _sender;
+  match isOwner with
+    | True =>
+      (*Edit to banned names*)
+      delete bannedNames[name];
+      msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0;
+                            code : unbannedName};
+      msgs = one_msg msg;
+      send msgs
+    | False =>
+      msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0;
+                            code : notOwner};
+      msgs = one_msg msg;
+      send msgs
+  end
+end
+
+transition withdrawZil(amount: Uint128)
+  owner <- current_owner;
+  isOwner = builtin eq owner _sender;
+  match isOwner with
+    | True =>
+      msg  = {_tag : ""; _recipient : _sender; _amount : amount;
+                            code : withdrawZil};
+      msgs = one_msg msg;
+      send msgs
+    | False =>
+      msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0;
+                            code : notOwner};
+      msgs = one_msg msg;
+      send msgs
+  end
+end
+
+transition withdrawCarb(amount: Uint128)
+  owner <- current_owner;
+  isOwner = builtin eq owner _sender;
+  carbAddr <- carbonContractAddr;
+  match isOwner with
+    | True =>
+      msg = {_tag : "Transfer"; _recipient: carbAddr; _amount: zero;
+              to: owner; amount: amount};
+      msgs = one_msg msg;
+      send msgs
+    | False =>
+      msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0;
+                            code : notOwner};
+      msgs = one_msg msg;
+      send msgs
+  end
+end
+
+
+transition changeAvatarOwnership(newAddress: ByStr20, name: String)
+  name_owner <- nameOwner;
+  nameExists <- exists nameOwner[name];
+  match nameExists with
+    | True =>
+      ownerOfAvatar <- nameOwner[name];
+      match ownerOfAvatar with
+        | Some ownerOfAvatar =>
+          sameOwner = builtin eq ownerOfAvatar _sender;
+          match sameOwner with
+            | True =>
+              nameOwner[name] := newAddress;
+              msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0;
+                            code : newOwner};
+              msgs = one_msg msg;
+              send msgs
+              
+            | False =>
+              msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0;
+                            code : notOwner};
+              msgs = one_msg msg;
+              send msgs
+          end
+        | None=>
+          msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0;
+                            code : emptyValue};
+          msgs = one_msg msg;
+          send msgs
+      end
+    | False =>
+      msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0;
+                            code : notOwner};
+      msgs = one_msg msg;
+      send msgs
+  end
+end
+
+(*Transitions are for etag used in carb contracts after calling the transition within carb contract*)
+transition RecipientAcceptTransferFrom(
+  initiator : ByStr20,
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+end
+
+
+transition RecipientAcceptTransfer(
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+  
+end
+
+transition TransferSuccessCallBack(
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+end
+
+transition TransferFromSuccessCallBack (
+  initiator : ByStr20,
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+  (*Check if sender is coming from Carbon Address only authentic token paid would be accepted*)
+  isCarbContract = builtin eq carbonContract _sender;
+  match isCarbContract with
+    | True =>
+      (*Factor in price is CARBS*)
+      carbAddr <- carbonContractAddr;
+      carbPrice <- pendingAmount[sender];
+      match carbPrice with
+      | Some carbPrice =>
+          correctPricePaid = builtin eq carbPrice amount;
+          match correctPricePaid with
+            | True =>
+              name <- pendingCarb[sender];
+              match name with
+                | Some name =>
+                  name_owner <- nameOwner;
+                  name_exists = builtin contains name_owner name;
+                  match name_exists with
+                    | True =>
+                      (*Name Taken*)
+                      nameStored <- pendingCarb[sender];
+                      match nameStored with
+                        | Some nameStored =>
+                          delete paid_while_pending[nameStored];
+                          delete pendingCarb[sender];
+                          delete pendingAmount[sender]
+                        | None =>
+                      end
+                    | False =>
+                      nameStored <- pendingCarb[sender];
+                      match nameStored with
+                        | Some nameStored =>
+                          delete paid_while_pending[nameStored];
+                          delete pendingCarb[sender];
+                          delete pendingAmount[sender]
+                        | None =>
+                      end;
+                      nameOwner[name] := sender;
+                      futureTransition[name] := false
+                  end
+                | None=>
+    
+              end
+            | False =>
+          end
+        | None=>
+      end
+    | False =>  
+  end
+end
+
+transition RequestOwnershipTransfer(new_owner : ByStr20)
+  owner <- current_owner;
+  isOwner = builtin eq _sender owner;
+  match isOwner with
+    | True =>
+      po = Some {ByStr20} new_owner;
+      pending_owner := po
+    | False =>
+  end
+  
+end
+
+transition ConfirmOwnershipTransfer()
+  optional_po <- pending_owner;
+  match optional_po with
+  | Some optional_po =>
+      caller_is_new_owner = builtin eq _sender optional_po;
+      match caller_is_new_owner with
+      | True =>
+          (* transfer ownership *)
+          current_owner := optional_po;
+          none = None {ByStr20};
+          pending_owner := none
+      | False => (* the caller is not the new owner, do nothing*)
+      end
+  | None => (* ownership transfer is not in-progress, do nothing *)
+  end
+end

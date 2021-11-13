@@ -1,0 +1,834 @@
+scilla_version 0
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+
+(*Import libraries*)
+import BoolUtils
+
+(*Library declaration*)
+library ZilChess
+
+(*ELO codes*)
+let start_ELO = Uint32 1600
+let empty_ELO = Uint32 0
+
+(*Empty gameID and playerID*)
+let empty_game_id = 0x0000000000000000000000000000000000000000000000000000000000000000
+let empty_player_id = 0x0000000000000000000000000000000000000000
+
+(*Color codes*)
+let white = "W"
+let black = "B"
+
+(*IsPlaying codes*)
+let is_Playing = True
+let is_Not_Playing = False
+
+(*Game status codes*)
+let aborted = Uint32 0
+let waiting = Uint32 1
+let started = Uint32 2
+let ended = Uint32 3
+let rewarded = Uint32 4
+
+(*Game result codes*)
+let lose = Uint32 0
+let draw = Uint32 1
+let win = Uint32 2
+
+(*Room codes*)
+let bf = "BF"
+let gk = "GK"
+let mc = "MC"
+let bh = "BH"
+
+(*Init game number*)
+let initGameN = Uint32 0
+
+(*Slicing string codes*)
+let id0 = Uint32 0
+let len2 = Uint32 2
+
+(*Function for removing Options from GameIDs*)
+let gameID = 
+  let someByStr32 = 0x0000000000000000000000000000000000000000000000000000000000000000 in
+  Some {ByStr32} someByStr32
+let rmvOptionFromGameID =
+  fun (optGameID: Option ByStr32) =>
+    match optGameID with
+      | Some gameID => gameID
+      | None => 0x0000000000000000000000000000000000000000000000000000000000000000
+    end
+
+(*Function for removing Options from StatusID*)
+let statusID = 
+  let someUint32 = Uint32 0 in
+  Some {Uint32} someUint32
+let rmvOptionFromStatusID =
+  fun (optStatusID: Option Uint32) =>
+    match optStatusID with
+      | Some statusID => statusID
+      | None => Uint32 0
+    end
+
+(*Function for removing Options from BoardID*)
+let boardID = 
+  let someString = "" in
+  Some {String} someString
+let rmvOptionFromBoardID =
+  fun (optBoardID: Option String) =>
+    match optBoardID with
+      | Some boardID => boardID
+      | None => ""
+    end
+
+(*Function for removing Options from PlayerIDs*)
+let playerID = 
+  let someByStr20 = 0x0000000000000000000000000000000000000000 in
+  Some {ByStr20} someByStr20
+let rmvOptionFromPlayerID =
+  fun (optPlayerID: Option ByStr20) =>
+    match optPlayerID with
+      | Some playerID => playerID
+      | None => 0x0000000000000000000000000000000000000000
+    end
+
+(*Function for removing Options from ColorID*)
+let colorID = 
+  let someString = "" in
+  Some {String} someString
+let rmvOptionFromColorID =
+  fun (optColorID: Option String) =>
+    match optColorID with
+      | Some colorID => colorID
+      | None => ""
+    end
+    
+(*Function for removing Options from isPlaying*)
+let isPlaying = 
+  let someBool = False in
+  Some {Bool} someBool
+let rmvOptionFromIsPlaying =
+  fun (optIsPlaying: Option Bool) =>
+    match optIsPlaying with
+      | Some isPlaying => isPlaying
+      | None => False
+    end
+
+(*Function for removing Options from ELO*)
+let elo = 
+  let someUint32 = Uint32 0 in
+  Some {Uint32} someUint32
+let rmvOptionFromELO =
+  fun (optELO: Option Uint32) =>
+    match optELO with
+      | Some elo => elo
+      | None => Uint32 0
+    end
+
+(*Function for removing Options from Game Number*)
+let gameNumber = 
+  let someUint32 = Uint32 0 in
+  Some {Uint32} someUint32
+let rmvOptionFromGameNumber =
+  fun (optGameNumber: Option Uint32) =>
+    match optGameNumber with
+      | Some gameNumber => gameNumber
+      | None => Uint32 0
+    end
+
+(*Function for determining the result of the opponent*)
+let opponentResult =
+  fun (result: Uint32) =>
+    let is_win = builtin eq result win in
+    let is_lose = builtin eq result lose in
+    let is_draw = builtin eq result draw in
+    match is_win with
+      | True => lose
+      | False => (*do nothing*)
+        match is_lose with
+          | True => win
+          | False => (*do nothing*)
+            match is_draw with
+              | True => draw
+              | False => Uint32 3
+            end
+        end
+    end
+
+(*Function for inverting the color*)
+let invertColor =
+  fun (color: String) =>
+    let is_white = builtin eq color white in
+    match is_white with
+      | True => black
+      | False => white
+    end
+
+(*Including msg in an array*)
+let one_msg = 
+  fun (msg : Message) =>
+  let nil_msg = Nil {Message} in
+  Cons {Message} msg nil_msg
+
+(***************************************************)
+(*             Contract definition                 *)
+(***************************************************)
+
+contract ZilChessNew
+(owner: ByStr20, dev_team_account: ByStr20, dividend_account: ByStr20)
+
+
+(**************************************)
+(*         Mutable variables          *)
+(**************************************)
+
+field bobbyfisherBet: Uint128 = Uint128 150000000000000
+field garrykasparovBet: Uint128 = Uint128 250000000000000
+field magnuscarlsenBet: Uint128 = Uint128 350000000000000
+field bethharmonBet: Uint128 = Uint128 500000000000000
+field bobbyfisherRewardWin: Uint128 = Uint128 270000000000000
+field garrykasparovRewardWin: Uint128 = Uint128 450000000000000
+field magnuscarlsenRewardWin: Uint128 = Uint128 630000000000000
+field bethharmonRewardWin: Uint128 = Uint128 900000000000000
+field bobbyfisherRewardDraw: Uint128 = Uint128 135000000000000
+field garrykasparovRewardDraw: Uint128 = Uint128 225000000000000
+field magnuscarlsenRewardDraw: Uint128 = Uint128 315000000000000
+field bethharmonRewardDraw: Uint128 = Uint128 450000000000000
+
+field chessPlayerGame: Map ByStr32 ByStr20 = Emp ByStr32 ByStr20
+field chessGameGame: Map ByStr32 ByStr32 = Emp ByStr32 ByStr32
+field chessBoardGame: Map ByStr32 String = Emp ByStr32 String
+field chessColorGame: Map ByStr32 String = Emp ByStr32 String
+field chessStatusGame: Map ByStr32 Uint32 = Emp ByStr32 Uint32
+field chessResultGame: Map ByStr32 Uint32 = Emp ByStr32 Uint32
+field chessEndcodeGame: Map ByStr32 String = Emp ByStr32 String
+field chessHistoryGame: Map ByStr32 String = Emp ByStr32 String
+
+field chessELOPlayer: Map ByStr20 Uint32 = Emp ByStr20 Uint32
+field chessIsPlayingPlayer: Map ByStr20 Bool = Emp ByStr20 Bool
+
+field chessGameSeat: Map String (Map String ByStr32) = Emp String (Map String ByStr32)
+
+
+(**************************************)
+(*             Procedures             *)
+(**************************************)
+
+(******************)
+(*    isOwner     *)
+(******************)
+
+(*isOwner check for reserved transitions*)
+procedure isOwner (user_address: ByStr20)
+  is_owner = builtin eq owner user_address;
+  match is_owner with
+    | False => throw
+    | True => (*do nothing*)
+  end
+end
+
+(******************)
+(*    isPlayer    *)
+(******************)
+
+(*isPlayer check for moveGame transition*)
+procedure isPlayer (player_address: ByStr20, user_address: ByStr20)
+  is_player = builtin eq player_address user_address;
+  match is_player with
+    | False => throw
+    | True => (*do nothing*)
+  end
+end
+
+(******************)
+(*    isJoined    *)
+(******************)
+
+(*isJoined check for abortGame transition*)
+procedure isJoined (status: Uint32)
+  is_joined = builtin eq status waiting;
+  match is_joined with
+    | False => throw
+    | True => (*do nothing*)
+  end
+end
+
+(******************)
+(*   isStarted    *)
+(******************)
+
+(*isStarted check for gameOver transition*)
+procedure isStarted (status: Uint32)
+  is_started = builtin eq status started;
+  match is_started with
+    | False => throw
+    | True => (*do nothing*)
+  end
+end
+
+(******************)
+(*    isEnded     *)
+(******************)
+
+(*isEnded check for mintZCH transition*)
+procedure isEnded (status: Uint32)
+  is_ended = builtin eq status ended;
+  match is_ended with
+    | False => throw
+    | True => (*do nothing*)
+  end
+end
+
+(******************)
+(*   startGame    *)
+(******************)
+
+(*Change status and send event*)
+procedure startGame (game_id: ByStr32, game_id_opponent: ByStr32)
+  opt_color_game_id <- chessColorGame[game_id];
+  color_game_id = rmvOptionFromColorID opt_color_game_id;
+  is_white = builtin eq color_game_id white;
+  match is_white with
+    | True =>
+      color_opponent = black;
+      chessStatusGame[game_id] := started;
+      chessStatusGame[game_id_opponent] := started;
+      chessGameGame[game_id] := game_id_opponent;
+      chessGameGame[game_id_opponent] := game_id;
+      
+      (*send event*)
+      e = { _eventname: "started";
+            gameID: game_id;
+            gameIDOpponent: game_id_opponent};
+      event e
+      
+      | False =>
+      color_opponent = white;
+      chessStatusGame[game_id] := started;
+      chessStatusGame[game_id_opponent] := started;
+      chessGameGame[game_id] := game_id_opponent;
+      chessGameGame[game_id_opponent] := game_id;
+      
+      (*send event*)
+      e = { _eventname: "started";
+            gameID: game_id;
+            gameIDOpponent: game_id_opponent};
+      event e
+  end
+end
+
+(******************)
+(*    endGame     *)
+(******************)
+
+(*Finalize game, change status, result and remove data from chessGameSeat*)
+procedure endGame(game_id: ByStr32, result: Uint32, end_code: String, game_history: String, elo_player: Uint32, elo_opponent: Uint32)
+  (*update database after game end*)
+  chessStatusGame[game_id] := ended;
+  chessEndcodeGame[game_id] := end_code;
+  chessResultGame[game_id] := result;
+  chessHistoryGame[game_id] := game_history;
+  opt_game_id_opponent <- chessGameGame[game_id];
+  game_id_opponent = rmvOptionFromGameID opt_game_id_opponent;
+  opponent_result = opponentResult result;
+  chessStatusGame[game_id_opponent] := ended;
+  chessEndcodeGame[game_id_opponent] := end_code;
+  chessResultGame[game_id_opponent] := opponent_result;
+  chessHistoryGame[game_id_opponent] := game_history;
+  opt_board_id <- chessBoardGame[game_id];
+  board_id = rmvOptionFromBoardID opt_board_id;
+  delete chessGameSeat[board_id][white];
+  delete chessGameSeat[board_id][black];
+  opt_player_address <- chessPlayerGame[game_id];
+  player_address = rmvOptionFromPlayerID opt_player_address;
+  chessIsPlayingPlayer[player_address] := is_Not_Playing;
+  opt_opponent_address <- chessPlayerGame[game_id_opponent];
+  opponent_address = rmvOptionFromPlayerID opt_opponent_address;
+  chessIsPlayingPlayer[opponent_address] := is_Not_Playing;
+  chessELOPlayer[player_address] := elo_player;
+  chessELOPlayer[opponent_address] := elo_opponent;
+  (*send event*)
+  e = { _eventname: "ended";
+        gameID: game_id;
+        gameIDOpponent: game_id_opponent;
+        result: result;
+        end_code: end_code};
+  event e;
+  (*pay rewards, fees and transfer dividends*)
+  (*check room and pay*)
+  opt_board <- chessBoardGame[game_id];
+  board = rmvOptionFromBoardID opt_board;
+  room = builtin substr board id0 len2;
+  is_BF = builtin eq room bf;
+  is_GK = builtin eq room gk;
+  is_MC = builtin eq room mc;
+  is_BH = builtin eq room bh;
+  match is_BF with
+    | True =>
+      has_player_won = builtin eq result win;
+      bfRewardWin <- bobbyfisherRewardWin;
+      bfRewardDraw <- bobbyfisherRewardDraw;
+      match has_player_won with
+        | True =>
+          msg = {_tag: "";
+                 _recipient: player_address;
+                 _amount: bfRewardWin};
+          msgs = one_msg msg;
+          send msgs
+        | False =>
+          has_player_drawn = builtin eq result draw;
+          match has_player_drawn with
+            | True =>
+              msg_1 = {_tag: "";
+                       _recipient: player_address;
+                       _amount: bfRewardDraw};
+              msgs_1 = one_msg msg_1;
+              send msgs_1;
+              msg_2 = {_tag: "";
+                       _recipient: opponent_address;
+                       _amount: bfRewardDraw};
+              msgs_2 = one_msg msg_2;
+              send msgs_2
+            | False =>
+              msg = {_tag: "";
+                     _recipient: opponent_address;
+                     _amount: bfRewardWin};
+              msgs = one_msg msg;
+              send msgs
+          end
+      end;
+      bfBet <- bobbyfisherBet;
+      dev_team_fees = builtin sub bfBet bfRewardDraw;
+      dividends = dev_team_fees;
+      msg = {_tag: "";
+             _recipient: dev_team_account;
+             _amount: dev_team_fees};
+      msgs = one_msg msg;
+      send msgs;
+      msg = {_tag: "";
+             _recipient: dividend_account;
+             _amount: dividends};
+      msgs = one_msg msg;
+      send msgs
+    | False => (*do nothing*)
+  end;
+  match is_GK with
+    | True =>
+      has_player_won = builtin eq result win;
+      gkRewardWin <- garrykasparovRewardWin;
+      gkRewardDraw <- garrykasparovRewardDraw;
+      match has_player_won with
+        | True =>
+          msg = {_tag: "";
+                 _recipient: player_address;
+                 _amount: gkRewardWin};
+          msgs = one_msg msg;
+          send msgs
+        | False =>
+          has_player_drawn = builtin eq result draw;
+          match has_player_drawn with
+            | True =>
+              msg_1 = {_tag: "";
+                       _recipient: player_address;
+                       _amount: gkRewardDraw};
+              msgs_1 = one_msg msg_1;
+              send msgs_1;
+              msg_2 = {_tag: "";
+                       _recipient: opponent_address;
+                       _amount: gkRewardDraw};
+              msgs_2 = one_msg msg_2;
+              send msgs_2
+            | False =>
+              msg = {_tag: "";
+                     _recipient: opponent_address;
+                     _amount: gkRewardWin};
+              msgs = one_msg msg;
+              send msgs
+          end
+      end;
+      gkBet <- garrykasparovBet;
+      dev_team_fees = builtin sub gkBet gkRewardDraw;
+      dividends = dev_team_fees;
+      msg = {_tag: "";
+             _recipient: dev_team_account;
+             _amount: dev_team_fees};
+      msgs = one_msg msg;
+      send msgs;
+      msg = {_tag: "";
+             _recipient: dividend_account;
+             _amount: dividends};
+      msgs = one_msg msg;
+      send msgs
+    | False => (*do nothing*)
+  end;
+  match is_MC with
+    | True =>
+      has_player_won = builtin eq result win;
+      mcRewardWin <- magnuscarlsenRewardWin;
+      mcRewardDraw <- magnuscarlsenRewardDraw;
+      match has_player_won with
+        | True =>
+          msg = {_tag: "";
+                 _recipient: player_address;
+                 _amount: mcRewardWin};
+          msgs = one_msg msg;
+          send msgs
+        | False =>
+          has_player_drawn = builtin eq result draw;
+          match has_player_drawn with
+            | True =>
+              msg_1 = {_tag: "";
+                       _recipient: player_address;
+                       _amount: mcRewardDraw};
+              msgs_1 = one_msg msg_1;
+              send msgs_1;
+              msg_2 = {_tag: "";
+                       _recipient: opponent_address;
+                       _amount: mcRewardDraw};
+              msgs_2 = one_msg msg_2;
+              send msgs_2
+            | False =>
+              msg = {_tag: "";
+                     _recipient: opponent_address;
+                     _amount: mcRewardWin};
+              msgs = one_msg msg;
+              send msgs
+          end
+      end;
+      mcBet <- magnuscarlsenBet;
+      dev_team_fees = builtin sub mcBet mcRewardDraw;
+      dividends = dev_team_fees;
+      msg = {_tag: "";
+             _recipient: dev_team_account;
+             _amount: dev_team_fees};
+      msgs = one_msg msg;
+      send msgs;
+      msg = {_tag: "";
+             _recipient: dividend_account;
+             _amount: dividends};
+      msgs = one_msg msg;
+      send msgs
+    | False => (*do nothing*)
+  end;
+  match is_BH with
+    | True =>
+      has_player_won = builtin eq result win;
+      bhRewardWin <- bethharmonRewardWin;
+      bhRewardDraw <- bethharmonRewardDraw;
+      match has_player_won with
+        | True =>
+          msg = {_tag: "";
+                 _recipient: player_address;
+                 _amount: bhRewardWin};
+          msgs = one_msg msg;
+          send msgs
+        | False =>
+          has_player_drawn = builtin eq result draw;
+          match has_player_drawn with
+            | True =>
+              msg_1 = {_tag: "";
+                       _recipient: player_address;
+                       _amount: bhRewardDraw};
+              msgs_1 = one_msg msg_1;
+              send msgs_1;
+              msg_2 = {_tag: "";
+                       _recipient: opponent_address;
+                       _amount: bhRewardDraw};
+              msgs_2 = one_msg msg_2;
+              send msgs_2
+            | False =>
+              msg = {_tag: "";
+                     _recipient: opponent_address;
+                     _amount: bhRewardWin};
+              msgs = one_msg msg;
+              send msgs
+          end
+      end;
+      bhBet <- bethharmonBet;
+      dev_team_fees = builtin sub bhBet bhRewardDraw;
+      dividends = dev_team_fees;
+      msg = {_tag: "";
+             _recipient: dev_team_account;
+             _amount: dev_team_fees};
+      msgs = one_msg msg;
+      send msgs;
+      msg = {_tag: "";
+             _recipient: dividend_account;
+             _amount: dividends};
+      msgs = one_msg msg;
+      send msgs
+    | False => (*do nothing*)
+  end
+end
+  
+  
+
+(***************************************)
+(*             Transitions             *)
+(***************************************)
+
+(******************)
+(*    initGame    *)
+(******************)
+
+(*Check player registration and execute game initialization*)
+transition initGame(game_id: ByStr32, player_id: ByStr20, board_id: String, color: String)
+  (*SECURITY CHECK: check if game_id already exists*)
+  game_is_registered <- exists chessPlayerGame[game_id];
+  match game_is_registered with
+    | True => throw
+    | False => (*do nothing*)
+  end;
+  
+  (*SECURITY CHECK: check if player is playing another game*)
+  is_chessIsPlayingPlayer_not_empty <- exists chessIsPlayingPlayer[player_id];
+  match is_chessIsPlayingPlayer_not_empty with
+    | True =>
+      opt_is_playing_another_game <- chessIsPlayingPlayer[player_id];
+      is_playing_another_game = rmvOptionFromIsPlaying opt_is_playing_another_game;
+      match is_playing_another_game with
+        | True => throw
+        | False => chessIsPlayingPlayer[player_id] := is_Playing
+      end
+    | False =>
+      chessIsPlayingPlayer[player_id] := is_Playing
+  end;
+  
+  (*SECURITY CHECK: check if the seat is already occupied*)
+  is_seat_occupied <- exists chessGameSeat[board_id][color];
+  match is_seat_occupied with
+    | True => throw
+    | False => (*do nothing*)
+  end;
+  
+  (*Start transition*)
+  (*potentially register player in the players database*)
+  player_exists <- exists chessELOPlayer[player_id];
+  match player_exists with
+    | True => (*do nothing*)
+    | False => chessELOPlayer[player_id] := start_ELO
+  end;
+      
+  (*accept bet amount*)
+  accept;   
+          
+  (*update mutable variables*)
+  chessGameSeat[board_id][color] := game_id;
+  chessPlayerGame[game_id] := player_id;
+  chessBoardGame[game_id] := board_id;
+  chessColorGame[game_id] := color;
+  chessStatusGame[game_id] := waiting;          
+            
+  (*if opponent exists, send event and call procedure start game else send event*)
+  color_opponent = invertColor color;
+  opponent_exists <- exists chessGameSeat[board_id][color_opponent];
+  
+  match opponent_exists with
+    | True =>
+      opt_game_id_opponent <- chessGameSeat[board_id][color_opponent];
+      game_id_opponent = rmvOptionFromGameID opt_game_id_opponent;
+      opt_player_id_opponent <- chessPlayerGame[game_id_opponent];
+      player_id_opponent = rmvOptionFromPlayerID opt_player_id_opponent;
+      opt_elo_player <- chessELOPlayer[player_id];
+      elo_player = rmvOptionFromELO opt_elo_player;
+      opt_elo_opponent <- chessELOPlayer[player_id_opponent];
+      elo_opponent = rmvOptionFromELO opt_elo_opponent;
+      e = { _eventname: "joined";
+            gameID: game_id;
+            gameIDOpponent: game_id_opponent;
+            playerID: player_id;
+            playerIDOpponent: player_id_opponent;
+            playerELO: elo_player;
+            opponentELO: elo_opponent};
+      event e;
+      startGame game_id game_id_opponent
+    | False =>
+      opt_elo_player <- chessELOPlayer[player_id];
+      elo_player = rmvOptionFromELO opt_elo_player;
+      elo_opponent = empty_ELO;
+      e = { _eventname: "joined";
+            gameID: game_id;
+            gameIDOpponent: empty_game_id;
+            playerID: player_id;
+            playerIDOpponent: empty_player_id;
+            playerELO: elo_player;
+            opponentELO: elo_opponent};
+      event e
+  end
+end
+
+(******************)
+(*    gameOver    *)
+(******************)
+
+(*end game after validation of the owner*)
+transition gameOver(game_id: ByStr32, result: Uint32, end_code: String, game_history: String, elo_player: Uint32, elo_opponent: Uint32)
+  (*SECURITY CHECK: check if sender is the owner*)
+  isOwner _sender;
+  
+  (*SECURITY CHECK: check if game is started*)
+  opt_game_status <- chessStatusGame[game_id];
+  game_status = rmvOptionFromStatusID opt_game_status;
+  isStarted game_status;
+  
+  endGame game_id result end_code game_history elo_player elo_opponent
+end
+
+(******************)
+(*   abortGame    *)
+(******************)
+
+(*abort game upon player request*)
+transition abortGame(game_id: ByStr32)
+  (*SECURITY CHECK: check if sender is the player corresponding to the game id*)
+  opt_player_address <- chessPlayerGame[game_id];
+  player_address = rmvOptionFromPlayerID opt_player_address;
+  isPlayer player_address _sender;
+  
+  (*SECURITY CHECK: check if game status is 'waiting'*)
+  opt_status_id <- chessStatusGame[game_id];
+  status_id = rmvOptionFromStatusID opt_status_id;
+  isJoined status_id;
+  
+  (*Start transition*)
+  (*refund bet amount*)
+  opt_board <- chessBoardGame[game_id];
+  board = rmvOptionFromBoardID opt_board;
+  room = builtin substr board id0 len2;
+  is_BF = builtin eq room bf;
+  is_GK = builtin eq room gk;
+  is_MC = builtin eq room mc;
+  is_BH = builtin eq room bh;
+match is_BF with
+    | True =>
+      bfBet <- bobbyfisherBet;
+      msg = {_tag: "";
+      _recipient: player_address;
+      _amount: bfBet};
+      msgs = one_msg msg;
+      send msgs
+    | False =>
+      (*do nothing*)
+  end;
+  match is_GK with
+    | True =>
+      gkBet <- garrykasparovBet;
+      msg = {_tag: "";
+      _recipient: player_address;
+      _amount: gkBet};
+      msgs = one_msg msg;
+      send msgs
+    | False =>
+      (*do nothing*)
+  end;
+  match is_MC with
+    | True =>
+      mcBet <- magnuscarlsenBet;
+      msg = {_tag: "";
+      _recipient: player_address;
+      _amount: mcBet};
+      msgs = one_msg msg;
+      send msgs
+    | False =>
+      (*do nothing*)
+  end;
+  match is_BH with
+    | True =>
+      bhBet <- bethharmonBet;
+      msg = {_tag: "";
+      _recipient: player_address;
+      _amount: bhBet};
+      msgs = one_msg msg;
+      send msgs
+    | False =>
+      (*do nothing*)
+  end;
+
+  (*update database*)
+  chessStatusGame[game_id] := aborted;
+  opt_board_id <- chessBoardGame[game_id];
+  board_id = rmvOptionFromBoardID opt_board_id;
+  opt_color_game_id <- chessColorGame[game_id];
+  color_game_id = rmvOptionFromColorID opt_color_game_id;
+  is_white = builtin eq color_game_id white;
+  match is_white with
+    | True => delete chessGameSeat[board_id][white]
+    | False => delete chessGameSeat[board_id][black]
+  end;
+  chessIsPlayingPlayer[player_address] := is_Not_Playing;
+  
+  (*send event*)
+  e = { _eventname: "aborted";
+        gameID: game_id;
+        gameIDOpponent: empty_game_id};
+  event e
+end
+
+(******************)
+(*   adjustBet    *)
+(******************)
+
+(*adjust bet parameters*)
+transition adjustBet(room: String, bet_amount: Uint128, reward_win: Uint128, reward_draw: Uint128)
+  isOwner _sender;
+  is_BF = builtin eq room bf;
+  is_GK = builtin eq room gk;
+  is_MC = builtin eq room mc;
+  is_BH = builtin eq room bh;
+  match is_BF with
+    | True =>
+      bobbyfisherBet := bet_amount;
+      bobbyfisherRewardWin := reward_win;
+      bobbyfisherRewardDraw := reward_draw
+    | False =>
+      (*do nothing*)
+  end;
+  match is_GK with
+    | True =>
+      garrykasparovBet := bet_amount;
+      garrykasparovRewardWin := reward_win;
+      garrykasparovRewardDraw := reward_draw
+    | False =>
+      (*do nothing*)
+  end;
+  match is_MC with
+    | True =>
+      magnuscarlsenBet := bet_amount;
+      magnuscarlsenRewardWin := reward_win;
+      magnuscarlsenRewardDraw := reward_draw
+    | False =>
+      (*do nothing*)
+  end;
+  match is_BH with
+    | True =>
+      bethharmonBet := bet_amount;
+      bethharmonRewardWin := reward_win;
+      bethharmonRewardDraw := reward_draw
+    | False =>
+      (*do nothing*)
+  end
+end
+
+(******************)
+(*     mintZCH    *)
+(******************)
+
+(*change game status from ended to rewarded*)
+transition mintZCH(game_id: ByStr32)
+
+  (*SECURITY CHECK: check if sender is player of the gameid*)
+  opt_playerid <- chessPlayerGame[game_id];
+  playerid = rmvOptionFromPlayerID opt_playerid;
+  isPlayer playerid _sender;
+  
+  (*SECURITY CHECK: check if game is ended*)
+  opt_game_status <- chessStatusGame[game_id];
+  game_status = rmvOptionFromStatusID opt_game_status;
+  isEnded game_status;
+  
+  chessStatusGame[game_id] := rewarded
+  
+end

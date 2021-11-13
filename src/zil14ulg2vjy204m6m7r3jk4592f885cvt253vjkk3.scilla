@@ -1,0 +1,265 @@
+scilla_version 0
+
+(*Utils*)
+import BoolUtils IntUtils 
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+library Vesting
+
+let one_msg =
+  fun (msg: Message) =>
+  let nil_msg = Nil {Message} in
+  Cons {Message} msg nil_msg
+  
+let two_msgs =
+fun (msg1 : Message) =>
+fun (msg2 : Message) =>
+  let msgs_tmp = one_msg msg2 in
+  Cons {Message} msg1 msgs_tmp
+  
+  
+let blk_leq =
+  fun (blk1 : BNum) =>
+  fun (blk2 : BNum) =>
+    let bc1 = builtin blt blk1 blk2 in 
+    let bc2 = builtin eq blk1 blk2 in 
+    orb bc1 bc2
+    
+
+let true = True
+let false = False
+
+let zeroBlock = BNum 0
+let hundredUint = Uint128 100
+let oneUint = Uint128 1
+let zeroUint = Uint128 0
+
+type Error =
+  | CodeContractFunded
+  | CodeNotContractOwner
+  | CodeBlocksNotMet
+  | CodeWrongAmountSent
+
+let make_error =
+  fun (result : Error) =>
+    let result_code = 
+      match result with
+      | CodeContractFunded            => Int32 -1
+      | CodeNotContractOwner          => Int32 -2
+      | CodeBlocksNotMet              => Int32 -3
+      | CodeWrongAmountSent           => Int32 -4
+      end
+    in
+    { _exception : "Error"; code : result_code }
+
+
+(*-------------------------------------------------*)
+
+contract Vesting
+(
+  initial_owner : ByStr20,
+  token_contract_addr : ByStr20,
+  initial: Uint128,
+  reward: Uint128,
+  rate: Uint128,
+  durationUint: Uint128,
+  durationInt: Int256
+)
+
+(*********    Contract Details       *********)
+field contract_payee : ByStr20 =  initial_owner
+field pending_owner : Option ByStr20 = None {ByStr20}
+field tokenContractAddr : ByStr20 = token_contract_addr
+field contract_amount: Uint128 = Uint128 0
+field fundedContract: Bool = False
+
+field rewardPerEpoch : Uint128 = Uint128 0
+field rewardForLastEpoch : Uint128 = Uint128 0
+field howManyEpochRewards: Uint128 = Uint128 0
+
+field lastRewardBlock : BNum = BNum 0
+field nextRewardBlock : BNum = BNum 0
+
+
+procedure throwError(err : Error)
+  e = make_error err;
+  throw e
+end
+
+procedure isContractOwner()
+  owner <- contract_payee;
+  is_owner = builtin eq owner _sender;
+  match is_owner with 
+    | True =>
+    | False =>
+      err = CodeNotContractOwner;
+      throwError err
+  end
+end
+
+
+transition receiveRewards()
+  isContractOwner;
+  currentBlk <- & BLOCKNUMBER;
+  rewardBlk <- nextRewardBlock;
+  lastRewardBlk <- lastRewardBlock;
+  (*If reward is lesser than currentBlk or equal it should give the reward*)
+  isReached = blk_leq rewardBlk currentBlk;
+  match isReached with
+    | True =>
+      epochCount <- howManyEpochRewards;
+      isZero = builtin eq epochCount zeroUint;
+      match isZero with
+        | False =>
+          rewardAmount <- rewardPerEpoch;
+          tokenAddr <- tokenContractAddr;
+          
+          blockDifference = builtin bsub currentBlk lastRewardBlk;
+
+          rewardsDued = builtin div blockDifference durationInt;
+          uintRewardsDued = builtin to_uint128 rewardsDued;
+          match uintRewardsDued with
+            | None =>
+            | Some num_rewards_due =>
+              contract_bal <- contract_amount;
+              paymentDued = builtin mul num_rewards_due rewardAmount;
+              isLesserThanAvailable = builtin lt paymentDued contract_bal;
+              match isLesserThanAvailable with
+                | True => 
+                  msg = {_tag: "Transfer"; _recipient : tokenAddr; _amount: Uint128 0; to: _sender; amount: paymentDued};
+                  msgs = one_msg msg;
+                  send msgs;
+                  
+                  newBalance = builtin sub contract_bal paymentDued;
+                  contract_amount := newBalance;
+                  
+                  countToMinus = builtin mul num_rewards_due oneUint;
+                  newEpochCount = builtin sub epochCount countToMinus;
+                  howManyEpochRewards := newEpochCount;
+                  
+                  newEpoch = builtin mul num_rewards_due durationUint;
+                  nxtRewardBlk = builtin badd rewardBlk newEpoch;
+                  nextRewardBlock := nxtRewardBlk;
+                  
+                  currentEpoch = builtin sub newEpoch durationUint;
+                  newLastRewardBlk = builtin badd rewardBlk currentEpoch;  
+                  lastRewardBlock := newLastRewardBlk
+                  
+                | False =>
+                  howManyEpochRewards := zeroUint;
+                  amount_to_send <- contract_amount;
+                  msg = {_tag: "Transfer"; _recipient : tokenAddr; _amount: Uint128 0; to: _sender; amount: amount_to_send};
+                  msgs = one_msg msg;
+                  send msgs;
+                  nextRewardBlock := zeroBlock;
+                  lastRewardBlock := currentBlk;
+                  contract_amount := zeroUint
+              end
+          end
+        | True =>
+          (*Check contract amount the give last week rewards*)
+          tokenAddr <- tokenContractAddr;
+          amount_to_send <- contract_amount;
+          msg = {_tag: "Transfer"; _recipient : tokenAddr; _amount: Uint128 0; to: _sender; amount: amount_to_send};
+          msgs = one_msg msg;
+          send msgs;
+          nextRewardBlock := zeroBlock;
+          lastRewardBlock := currentBlk;
+          contract_amount := zeroUint
+      end
+    | False=>
+      err = CodeBlocksNotMet;
+      throwError err
+  end
+end
+
+
+
+
+
+(*Change Owner of Contract*)
+transition RequestOwnershipTransfer(new_owner : ByStr20)
+  owner <- contract_payee;
+  isOwner = builtin eq _sender owner;
+  match isOwner with
+    | True =>
+      po = Some {ByStr20} new_owner;
+      pending_owner := po
+    | False =>
+      err = CodeNotContractOwner;
+      throwError err
+  end
+end
+
+transition ConfirmOwnershipTransfer()
+  optional_po <- pending_owner;
+  match optional_po with
+  | Some optional_po =>
+      caller_is_new_owner = builtin eq _sender optional_po;
+      match caller_is_new_owner with
+      | True =>
+          (* transfer ownership *)
+          contract_payee := optional_po;
+          none = None {ByStr20};
+          pending_owner := none
+      | False => (* the caller is not the new owner, do nothing*)
+        err = CodeNotContractOwner;
+        throwError err
+      end
+  | None => (* ownership transfer is not in-progress, do nothing *)
+  end
+end
+
+
+
+
+
+transition RecipientAcceptTransfer(
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+  funded <- fundedContract;
+  match funded with
+    | True =>
+      err = CodeContractFunded;
+      throwError err
+    | False =>
+
+      contract_balance = builtin add initial reward;
+      contract_amount := contract_balance;
+      
+      isCorrectFunded = builtin eq contract_balance amount;
+      match isCorrectFunded with
+        | True =>
+          onePercent = builtin div contract_balance hundredUint;
+          perEpochReward = builtin mul onePercent rate;
+          rewardPerEpoch := perEpochReward;
+          
+          finalEpochRate = builtin rem hundredUint rate;
+          lastEpochReward = builtin mul finalEpochRate onePercent;
+          rewardForLastEpoch := lastEpochReward;
+          
+          epochCount = builtin div hundredUint rate;
+          howManyEpochRewards := epochCount;
+          
+          current_blk <- & BLOCKNUMBER;
+          lastRewardBlock := current_blk;
+          firstRewardBlk = builtin badd current_blk durationUint;
+          nextRewardBlock := firstRewardBlk;
+          fundedContract := true
+        | False =>
+          err = CodeWrongAmountSent;
+          throwError err
+      end
+  end
+end
+
+transition TransferSuccessCallBack(
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+end

@@ -1,0 +1,145 @@
+scilla_version 0
+(*
+ /$$      /$$ /$$$$$$$$                                               
+| $$  /$ | $$| $$_____/                                               
+| $$ /$$$| $$| $$                                                     
+| $$/$$ $$ $$| $$$$$                                                  
+| $$$$_  $$$$| $$__/                                                  
+| $$$/ \  $$$| $$                                                     
+| $$/   \  $$| $$$$$$$$                                               
+|__/     \__/|________/                                               
+
+
+ /$$        /$$$$$$  /$$    /$$ /$$$$$$$$                             
+| $$       /$$__  $$| $$   | $$| $$_____/                             
+| $$      | $$  \ $$| $$   | $$| $$                                   
+| $$      | $$  | $$|  $$ / $$/| $$$$$                                
+| $$      | $$  | $$ \  $$ $$/ | $$__/                                
+| $$      | $$  | $$  \  $$$/  | $$                                   
+| $$$$$$$$|  $$$$$$/   \  $/   | $$$$$$$$                             
+|________/ \______/     \_/    |________/                             
+
+
+  /$$$$$$   /$$$$$$  /$$$$$$$  /$$     /$$                            
+ /$$__  $$ /$$__  $$| $$__  $$|  $$   /$$/                            
+| $$  \__/| $$  \ $$| $$  \ $$ \  $$ /$$/                             
+| $$ /$$$$| $$$$$$$$| $$$$$$$/  \  $$$$/                              
+| $$|_  $$| $$__  $$| $$__  $$   \  $$/                               
+| $$  \ $$| $$  | $$| $$  \ $$    | $$                                
+|  $$$$$$/| $$  | $$| $$  | $$    | $$                                
+ \______/ |__/  |__/|__/  |__/    |__/                                
+
+
+  /$$$$$$  /$$   /$$ /$$   /$$     /$$                                
+ /$$__  $$| $$$ | $$| $$  |  $$   /$$/                                
+| $$  \ $$| $$$$| $$| $$   \  $$ /$$/                                 
+| $$  | $$| $$ $$ $$| $$    \  $$$$/                                  
+| $$  | $$| $$  $$$$| $$     \  $$/                                   
+| $$  | $$| $$\  $$$| $$      | $$                                    
+|  $$$$$$/| $$ \  $$| $$$$$$$$| $$                                    
+ \______/ |__/  \__/|________/|__/                                    
+
+
+ /$$$$$$$  /$$        /$$$$$$  /$$     /$$ /$$$$$$ /$$   /$$  /$$$$$$ 
+| $$__  $$| $$       /$$__  $$|  $$   /$$/|_  $$_/| $$$ | $$ /$$__  $$
+| $$  \ $$| $$      | $$  \ $$ \  $$ /$$/   | $$  | $$$$| $$| $$  \__/
+| $$$$$$$/| $$      | $$$$$$$$  \  $$$$/    | $$  | $$ $$ $$| $$ /$$$$
+| $$____/ | $$      | $$__  $$   \  $$/     | $$  | $$  $$$$| $$|_  $$
+| $$      | $$      | $$  | $$    | $$      | $$  | $$\  $$$| $$  \ $$
+| $$      | $$$$$$$$| $$  | $$    | $$     /$$$$$$| $$ \  $$|  $$$$$$/
+|__/      |________/|__/  |__/    |__/    |______/|__/  \__/ \______/ 
+
+
+ /$$   /$$  /$$$$$$                                                   
+| $$  / $$ /$$__  $$                                                  
+|  $$/ $$/| $$  \ $$                                                  
+ \  $$$$/ | $$  | $$                                                  
+  >$$  $$ | $$  | $$                                                  
+ /$$/\  $$| $$  | $$                                                  
+| $$  \ $$|  $$$$$$/                                                  
+|__/  |__/ \______/   
+*)
+
+import BoolUtils
+library DuckDiscord
+
+let one = Uint256 1
+let tt = True
+let empty_wallet_map : Map ByStr20 String = Emp ByStr20 String
+
+let blk_leq =
+  fun (blk1 : BNum) =>
+  fun (blk2 : BNum) =>
+    let bc1 = builtin blt blk1 blk2 in 
+    let bc2 = builtin eq blk1 blk2 in 
+    orb bc1 bc2
+    
+type Error =
+  | CodeContestEnded
+  | CodeAlreadyEntered
+  
+let make_error_event =
+  fun (result : Error) =>
+    let result_code = 
+      match result with
+      | CodeContestEnded    => Int32 -1
+      | CodeAlreadyEntered  => Int32 -2
+      end
+    in
+    { _eventname : "Error"; code : result_code }
+    
+(***************************************************)
+(*             The contract definition             *)
+(***************************************************)    
+contract DuckDiscord
+(
+  block_deadline: BNum
+)
+
+field counter : Uint256 = Uint256 0
+field vote_map : Map ByStr20 Bool = Emp ByStr20 Bool
+field wallet_map : Map ByStr20 String = Emp ByStr20 String
+
+procedure EmitError(err : Error)
+  e = make_error_event err;
+  event e;
+  throw
+end
+
+(*changed params to wallet discord, was discord wallet neeko UI*)
+
+transition submitDiscordID(discordID: String)
+  (*get the current blocknumber and the blocknumberdeadline and compare them*)
+  this_block <- & BLOCKNUMBER;
+  valid_time = blk_leq this_block block_deadline;
+  match valid_time with 
+  | True  => 
+      (*check if wallet has entered before*)
+      has_entered_before <- exists wallet_map[_sender];
+      current_count <- counter;
+      match has_entered_before with
+      | True =>
+        (*already entered, can't readd to map[k]*)
+        err = CodeContestEnded;
+        EmitError err
+      | False =>
+          (*hasn't entered, add to map[k]*)
+          new_count = builtin add current_count one;
+          counter := new_count;
+          vote_map[_sender] := tt;
+          wallet_map[_sender] := discordID;
+          e = {
+                _eventname : "DuckCompetitionEntered";
+                shoutout : "DuckCompetitionEntered"; 
+                discordid : discordID;
+                sender : _sender;
+                new_vote_count: new_count
+          };
+          event e
+     end
+  (*contest ended*)
+  | False => 
+      err = CodeAlreadyEntered;
+      EmitError err
+  end 
+end

@@ -1,0 +1,82 @@
+(* HelloMetaWorld contract *)
+
+(***************************************************)
+(*                 Scilla version                  *)
+(***************************************************)
+
+scilla_version 0
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+library HelloMetaWorld
+
+let set_hello_code  = Uint32 2
+
+
+  (* Error events *)
+  type Error =
+    | CodeNotOwner
+    | CodeSignatureInvalid
+  
+  let makeErrorEvent =
+    fun (result : Error) =>
+      let result_code = 
+        match result with
+        | CodeNotOwner          => Int32 -1
+        | CodeSignatureInvalid  => Int32 -2
+        
+        end
+      in
+      { _eventname : "Error"; code : result_code }
+  
+
+(***************************************************)
+(*             The contract definition             *)
+(***************************************************)
+
+contract HelloMetaWorld
+(owner: ByStr20)
+
+field welcome_msg : String = ""
+
+
+(* Emit Errors *)
+procedure MakeError(err : Error)
+  e = makeErrorEvent err;
+  event e
+end
+
+  
+
+transition setHello (msg : String, value:Uint128 , signer: ByStr33, signature: ByStr64 )
+  is_owner = builtin eq owner _sender;
+  match is_owner with
+  | False =>
+    err = CodeNotOwner;
+    MakeError err
+  | True =>
+    msg_hash = builtin sha256hash msg;
+    val_hash = builtin sha256hash value;
+    combined_hash = builtin concat msg_hash val_hash;
+    arbitrary_hash = builtin to_bystr combined_hash;
+    ev = {_eventname : "CalculatedHash"; msg_hash: msg_hash; val_hash: val_hash; total_hash : combined_hash};
+    event ev;
+    valid_sig = builtin schnorr_verify signer arbitrary_hash signature;
+    match valid_sig with 
+      | True =>
+        welcome_msg := msg;
+        e = {_eventname : "setHello"; code : set_hello_code};
+        event e
+      | False =>
+        err = CodeSignatureInvalid;
+        MakeError err
+    end
+  end
+end
+
+transition getHello ()
+  r <- welcome_msg;
+  e = {_eventname: "getHello"; msg: r};
+  event e
+end

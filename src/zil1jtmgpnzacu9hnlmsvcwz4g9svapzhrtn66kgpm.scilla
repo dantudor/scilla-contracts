@@ -1,0 +1,308 @@
+scilla_version 0
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+
+library MoonletSwapProxy
+
+let null_address = 0x0000000000000000000000000000000000000000
+let zero = Uint128 0
+let commission_denominator = Uint128 10000
+
+let one_msg = fun (m: Message) =>
+  let e = Nil {Message} in
+  Cons {Message} m e
+
+let two_msgs =
+  fun (msg1 : Message) =>
+  fun (msg2 : Message) =>
+    let msgs_tmp = one_msg msg2 in
+    Cons {Message} msg1 msgs_tmp
+  
+type Error =
+  | CodeNotOwner
+  | CodeIsNull
+let make_error =
+  fun (result : Error) =>
+    let result_code = 
+      match result with
+        | CodeNotOwner     => Int32 -1
+        | CodeIsNull       => Int32 -2
+       
+  end
+  in
+  { _exception : "Error"; code : result_code }
+  
+  
+(***************************************************)
+(*             The contract definition             *)
+(***************************************************)
+
+contract MoonletSwapProxy(
+  init_owner: ByStr20, 
+  init_swap_contract_address: ByStr20
+)
+
+(* Mutable fields *)
+field owner: ByStr20 = init_owner
+field swap_contract_address: ByStr20 = init_swap_contract_address
+
+(* Util procedures *)
+procedure ThrowError(err : Error)
+  e = make_error err;
+  throw e
+end
+
+(* Validators *)
+procedure isOwner(address: ByStr20)
+  current_owner <- owner;
+  is_owner = builtin eq current_owner address;
+  match is_owner with
+    | True =>
+    | False =>
+      err = CodeNotOwner;
+      ThrowError err
+  end
+end
+
+procedure isNotNull(address: ByStr20)
+  is_null = builtin eq null_address address;
+  match is_null with
+    | True =>
+      err = CodeIsNull;
+      ThrowError err
+        | False =>
+  end
+end
+
+(* Set Transitions *)
+transition SetOwner(new_owner: ByStr20)
+  isOwner _sender;
+  isNotNull new_owner;
+  
+  owner := new_owner
+end
+
+transition SetSwapContractAddress(address: ByStr20)
+  isOwner _sender;
+  isNotNull address;
+  
+  swap_contract_address := address
+end
+
+(***************************************************)
+(*                 Swap transitions                *)
+(***************************************************)
+transition SwapExactZILForTokens( 
+  token_address: ByStr20,
+  min_token_amount: Uint128,
+  deadline_block: BNum,
+  recipient_address: ByStr20,
+  commission: Uint128
+)
+  isNotNull token_address;
+  isNotNull recipient_address;
+
+  (* Calculate amounts without commision *)
+  token_comm = builtin mul min_token_amount commission;
+  token_comm = builtin div token_comm commission_denominator;
+  token_amt = builtin sub min_token_amount token_comm;
+  
+  comm = builtin mul _amount commission;
+  comm = builtin div comm commission_denominator;
+  amt = builtin sub _amount comm;
+  
+  (* Swap tokens *)
+  swap_addr <- swap_contract_address;
+  msg1 = {
+    _tag: "SwapExactZILForTokens"; 
+    _recipient: swap_addr; 
+    _amount: amt; 
+    token_address: token_address;
+    min_token_amount: token_amt;
+    deadline_block: deadline_block;
+    recipient_address: recipient_address
+  };
+  
+  msgs = one_msg msg1;
+  
+  accept;
+  send msgs
+end
+
+transition SwapExactTokensForTokens(
+  token0_address: ByStr20,
+  token0_amount: Uint128,
+  token1_address: ByStr20,
+  min_token1_amount: Uint128,
+  deadline_block: BNum,
+  recipient_address: ByStr20,
+  commission: Uint128
+)
+  isNotNull token0_address;
+  isNotNull token1_address;
+  isNotNull recipient_address;
+  
+  (* Calulate amounts without commision *)
+  token0_comm = builtin mul token0_amount commission;
+  token0_comm = builtin div token0_comm commission_denominator;
+  token0_amt = builtin sub token0_amount token0_comm;
+  
+  token1_comm = builtin mul min_token1_amount commission;
+  token1_comm = builtin div token1_comm commission_denominator;
+  token1_amt = builtin sub min_token1_amount token1_comm;
+  
+  (* Transfer the commision *)
+  msg1 = {
+    _tag: "TransferFrom"; 
+    _recipient: token0_address; 
+    _amount: zero; 
+    from: _sender;
+    to: _this_address;
+    amount: token0_comm
+  };
+  
+  (* Swap tokens *)
+  swap_addr <- swap_contract_address;
+  msg2 = {
+    _tag: "SwapExactTokensForTokens"; 
+    _recipient: swap_addr; 
+    _amount: zero; 
+    token0_address: token0_address;
+    token0_amount: token0_amt;
+    token1_address: token1_address;
+    min_token1_amount: token1_amt;
+    deadline_block: deadline_block;
+    recipient_address: recipient_address
+  };
+  
+  msgs = two_msgs msg1 msg2;
+  send msgs
+end
+
+transition SwapExactTokensForZIL(
+  token_address : ByStr20,
+  token_amount : Uint128,
+  min_zil_amount : Uint128,
+  deadline_block: BNum,
+  recipient_address : ByStr20,
+  commission: Uint128
+)
+  isNotNull token_address;
+  isNotNull recipient_address;
+  
+  (* Caculate the amounts without commission *)
+  token_comm = builtin mul token_amount commission;
+  token_comm = builtin div token_comm commission_denominator;
+  token_amt = builtin sub token_amount token_comm;
+  
+  comm = builtin mul min_zil_amount commission;
+  comm = builtin div comm commission_denominator;
+  amt = builtin sub min_zil_amount comm;
+  
+  (* Transfer the commision *)
+  msg1 = {
+    _tag: "TransferFrom"; 
+    _recipient: token_address; 
+    _amount: zero; 
+    from: _sender;
+    to: _this_address;
+    amount: token_comm
+  };
+  
+  (* Swap the tokens *)
+  swap_addr <- swap_contract_address;
+  msg2 = {
+    _tag: "SwapExactTokensForZIL"; 
+    _recipient: swap_addr; 
+    _amount: zero; 
+    token_address : token_address;
+    token_amount : token_amt;
+    min_zil_amount : amt;
+    deadline_block : deadline_block;
+    recipient_address : recipient_address
+  };
+  
+  msgs = two_msgs msg1 msg2;
+  send msgs
+end
+
+
+(***************************************************)
+(*             Management transitions              *)
+(***************************************************)
+transition IncreaseAllowance(token_address: ByStr20, spender: ByStr20, amount: Uint128)
+  msg = {
+    _tag: "IncreaseAllowance";
+    _recipient: token_address;
+    _amount: zero;
+    spender: spender;
+    amount: amount
+  };
+  msgs = one_msg msg;
+  send msgs
+end
+
+transition TransferToken(token_address: ByStr20, to: ByStr20, amount: Uint128)
+  isOwner _sender;
+  isNotNull to;
+  
+  msg = {
+    _tag: "Transfer";
+    _recipient: token_address;
+    _amount: zero;
+    to: to;
+    amount: amount
+  };
+  msgs = one_msg msg;
+  send msgs
+end
+
+transition TransferZil(to: ByStr20, amount: Uint128)
+  isOwner _sender;
+  isNotNull to;
+  
+  msg = {
+    _tag: "";
+    _recipient: to;
+    _amount: amount
+  };
+  
+  msgs = one_msg msg;
+  send msgs
+end
+
+
+(***************************************************)
+(*            Transfer accept transitions          *)
+(***************************************************)
+transition RecipientAcceptTransferFrom(
+  initiator : ByStr20,
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+end
+
+transition RecipientAcceptTransfer(
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+end
+
+transition TransferFromSuccessCallBack(
+  initiator : ByStr20,
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+end
+
+transition TransferSuccessCallBack(
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+end

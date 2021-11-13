@@ -1,0 +1,175 @@
+scilla_version 0
+
+import PairUtils ListUtils
+library DuckBuyerProxy
+
+let one_msg = 
+  fun (msg : Message) => 
+  let nil_msg = Nil {Message} in
+    Cons {Message} msg nil_msg
+    
+let two_msgs =
+fun (msg1 : Message) =>
+fun (msg2 : Message) =>
+  let msgs_tmp = one_msg msg2 in
+  Cons {Message} msg1 msgs_tmp
+
+let test_amount_to_pay = Uint128 50000000000000 (* 50 zil VDR test  *)
+let zero = Uint256 0
+let one = Uint256 1
+let tt = True
+let ff = False
+
+type Error =
+  | UserRequiredToPay
+  | UserIncorrectVDR
+  | UserAlreadyPaid  
+  | UserNotOwner
+  
+let make_error_event =
+  fun (result : Error) =>
+    let result_code = 
+      match result with
+      | UserRequiredToPay => Int32 -1
+      | UserIncorrectVDR  => Int32 -2
+      | UserAlreadyPaid   => Int32 -3
+      | UserNotOwner      => Int32 -4      
+      end
+    in
+    { _eventname : "Error"; code : result_code }
+
+(***************************************************)
+(*             The contract definition             *)
+(***************************************************)
+contract DuckBuyerProxy
+(*  Parameters *)
+(
+  contract_owner: ByStr20,
+  duck_nft_contract_address : ByStr20
+)
+ 
+(* Mutable fields *)
+field wallet_paid_amount: Map ByStr20 Uint128 = Emp ByStr20 Uint128
+field currentDuckNftCount: Uint256 = Uint256 0
+
+
+procedure EmitError(err : Error)
+  e = make_error_event err;
+  event e;
+  throw
+end
+
+(* 
+Desc : this is called by buy, and then calls the NFT mint function with the params
+Params : to: ByStr20, 0x523f8a0370fE9423Ba83195c96f281F9E610c8F5
+         token_id: Uint256, 1
+         token_uri: String, https://pixls.blob.core.windows.net/api/metadata/1
+         token_metadata: String, {base: Mallard, base_rarity:30% ....................}
+         default_name: String, DUCK_0001
+         ipfs_hash: String 
+*)
+procedure mintDuck(tto: ByStr20, ttoken_uri: String, tduck_name: String)
+  mint_call = {
+    _tag: "Mint";
+    _recipient: duck_nft_contract_address;
+    _amount: Uint128 0;
+    to: tto;
+    token_uri: ttoken_uri;
+    duck_name: tduck_name
+  };
+  msgs = one_msg mint_call;
+  send msgs
+end
+
+(* 
+Desc : This can only be called by members of the paid map, they are able to call mintDuck and then are removed from the paid_map
+Todo :  error codes 
+Params : to: ByStr20, 0x523f8a0370fE9423Ba83195c96f281F9E610c8F5
+         token_id: Uint256, 1
+         token_uri: String, https://pixls.blob.core.windows.net/api/metadata/1
+         token_metadata: String, {base: Mallard, base_rarity:30% ....................}
+         default_name: String, DUCK_0001
+         ipfs_hash: String 
+*)
+transition proxyMint(to: ByStr20, token_uri: String, duck_name: String)
+  (*has the user already paid*)
+  local_duck_paid_map <- wallet_paid_amount;
+  has_paid = builtin contains local_duck_paid_map _sender;
+    match has_paid with
+    | True => 
+        (*mint a duck*)
+        mintDuck to token_uri duck_name;
+        (*remove from paid map*)
+         delete wallet_paid_amount[_sender];
+         (*increment counter*)
+         current_supply <- currentDuckNftCount;
+         new_supply = builtin add current_supply one;
+         currentDuckNftCount := new_supply;
+        (*emit success*)
+        e = {_eventname: "paidUserCallingMint"; amount: _amount};
+        event e
+    | False => 
+        (*need to pay first*)
+        e = {_eventname: "userNeedToPay"};
+        event e
+    end
+end
+
+(* 
+Desc : This is needed to hookback the function, otherwise it blows up 
+Params : 
+*)
+transition mintCallBack(recipient:ByStr20)
+
+end
+
+(* 
+Desc : User pays the contract? zils, they are added to paid map / amount map
+Todo : VDR, pay wallet not contract, error codes
+Params : 
+*)
+transition initalPayment()
+  (*Have they already paid?*)
+  local_duck_paid_map <- wallet_paid_amount;
+  has_paid = builtin contains local_duck_paid_map _sender;
+  match has_paid with
+      | False => 
+          (*add to paid map*)
+          wallet_paid_amount[_sender] := _amount;
+          accept;
+          e = {_eventname: "userMadePaymentSuccess"};
+          event e
+      | True => 
+        (*Have already paid*)
+        e = {_eventname: "userMadeAlreadyPaid"};
+        event e
+  end
+end
+
+
+transition ReturnFund ()
+  is_contract_owner = builtin eq _sender contract_owner;
+  match is_contract_owner with
+     | True => 
+        bal <- _balance;
+      
+        e = {
+          _eventname : "ReturnFundSuccessful";
+          returned_amount: bal
+        };
+        event e;
+      
+        msg = {
+          _tag: "";
+          _recipient: contract_owner;
+          _amount: bal
+        };
+      
+        msgs = one_msg msg;
+        send msgs
+    | False => 
+        err = UserNotOwner;
+        EmitError err
+    end
+end
+  
