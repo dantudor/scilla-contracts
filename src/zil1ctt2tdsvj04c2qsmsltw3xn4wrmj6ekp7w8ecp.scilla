@@ -1,0 +1,14 @@
+scilla_version 0
+
+contract TestDelegate(owner: ByStr20)
+
+transition DelegateStake(ssn_addr: ByStr20)
+  accept;
+  e = {
+        _eventname: "ssn";
+        ssn_addr: ssn_addr;
+        amount: _amount;
+        sender: _sender
+  };
+  event e
+end

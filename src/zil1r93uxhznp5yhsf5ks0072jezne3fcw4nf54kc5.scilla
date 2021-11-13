@@ -1,0 +1,353 @@
+(*                                *)
+(*          _ _  __ _ _           *)
+(*         (_) |/ _| (_)          *)
+(*      _____| | |_| |_ _ __      *)
+(*     |_  / | |  _| | | '_ \     *)
+(*      / /| | | | | | | |_) |    *)
+(*     /___|_|_|_| |_|_| .__/     *)
+(*                     | |        *)
+(*                     |_|        *)
+(*                                *)
+(*      zilFlip.com/ziLottery     *)
+
+(*Changes: max. 24hr block timer, key price increase from .001 to .002 and 50% dividend share*)
+
+scilla_version 0
+import BoolUtils
+
+library ZiLottery
+
+let one_msg = 
+  fun (msg : Message) => 
+  let nil_msg = Nil {Message} in
+  Cons {Message} msg nil_msg
+
+let zero = Uint128 0
+let divideTotal = Uint128 100
+let hasWithdrawn = Uint128 1
+let jackpotExclFee = Uint128 50
+let jackpotDevFee = Uint128 15
+let jackpotWinnerCut = Uint128 85
+let dividendKeyFee = Uint128 50
+
+let accepted_code = Uint32 0
+let not_owner_code = Uint32 1
+let code_invalid_params = Uint32 2
+let not_enough_zil_code = Uint32 3
+let successful_withdraw = Uint32 4
+let no_withdraw_balance = Uint32 5
+let game_not_ended = Uint32 6
+let game_ended = Uint32 7
+
+let true = True
+  
+contract ZiLottery(owner: ByStr20)
+
+(*Default game settings variables*)
+field keyPrice: Uint128 = Uint128 150000000000 (* Default key price is .15 ZIL *)
+field increaseKeyPriceBy: Uint128 = Uint128 2000000000 (* Each key purchase increases price by 0.002 ZIL *)
+
+(*------------------------------------*)
+
+(*            Game variables          *)
+
+(*------------------------------------*)
+
+field timer : BNum  = BNum 0
+
+field jackpot: Uint128 = Uint128 0
+field playerDividends: Uint128 = Uint128 0
+field developerVault: Uint128 = Uint128 0
+field keySupply: Uint128 = Uint128 0
+    
+field players: Map ByStr20 Uint128
+    = Emp ByStr20 Uint128
+    
+field playerWithdrawHistory: Map ByStr20 Uint128
+    = Emp ByStr20 Uint128
+                    
+field winningAddress: ByStr20 = owner
+
+(*------------------------------------*)
+
+(*      Setters & owner functions     *)
+
+(*------------------------------------*)
+
+transition setKeyPrice(amount: Uint128)
+  sender_is_owner = builtin eq _sender owner;
+  match sender_is_owner with
+     | False =>
+          msg = {_tag: "";
+                _recipient: _sender;
+                _amount: zero;
+                code: not_owner_code};
+          msgs = one_msg msg;
+          send msgs
+     | True =>
+        keyPrice := amount;
+        msg = {_tag: "";
+                _recipient: _sender;
+                _amount: zero;
+                code: accepted_code};
+        msgs = one_msg msg;
+        send msgs
+  end
+end
+
+transition withdrawDeveloperVault()
+  bal <- developerVault;
+  sender_is_owner = builtin eq _sender owner;
+  match sender_is_owner with
+     | False =>
+          msg = {_tag: "";
+                _recipient: _sender;
+                _amount: zero;
+                code: not_owner_code};
+          msgs = one_msg msg;
+          send msgs
+     | True =>
+        accept;
+        msg = {_tag: "";
+                _recipient: _sender;
+                _amount: bal;
+                code: accepted_code};
+        msgs = one_msg msg;
+        send msgs;
+        developerVault := zero
+  end
+end
+
+
+(*----------------------------*)
+
+(*       Game functions       *)
+
+(*----------------------------*)
+
+transition withdrawDividends()
+  endBlock <- timer;
+  currentBlock <- & BLOCKNUMBER;
+  after_deadline = builtin blt endBlock currentBlock;
+  match after_deadline with
+    | False =>
+        msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0; code : game_not_ended};
+        msgs = one_msg msg;
+        send msgs
+    | True =>
+    playerList <- players;
+  playerKeys = builtin get playerList _sender;
+    match playerKeys with
+    | None =>
+      msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0; code : code_invalid_params};
+      msgs = one_msg msg;
+      send msgs
+    | Some currentKeys =>
+      
+      withdrawList <- playerWithdrawHistory;
+      withdrawAmount = builtin get withdrawList _sender;
+      
+      match withdrawAmount with
+        | None =>
+          msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0; code : code_invalid_params};
+          msgs = one_msg msg;
+          send msgs
+        | Some playerWithdrawAmount =>
+          hasPlayerWithdrawn = builtin eq playerWithdrawAmount hasWithdrawn;
+          match hasPlayerWithdrawn with
+            | True =>
+              msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0; code : no_withdraw_balance};
+              msgs = one_msg msg;
+              send msgs
+            | False =>
+            totalKeySupply <- keySupply;
+            dividendPot <- playerDividends;
+            
+            dividendPerKey = builtin div dividendPot totalKeySupply;
+            earnings = builtin mul dividendPerKey currentKeys;
+              
+            divs <- playerDividends;
+            supply <- keySupply;
+            
+            playerWithdrawHistory[_sender] := hasWithdrawn;
+                
+            msg = {_tag: "";
+              _recipient: _sender;
+              _amount: earnings;
+              code: successful_withdraw };
+              msgs = one_msg msg;
+            send msgs
+          end
+    end
+  end
+  end
+end
+
+transition claimJackpot()
+  endBlock <- timer;
+  currentBlock <- & BLOCKNUMBER;
+  after_deadline = builtin blt endBlock currentBlock;
+  match after_deadline with
+    | True =>
+      winnerAddress <- winningAddress;
+      senderIsWinner = builtin eq winnerAddress _sender;
+      match senderIsWinner with
+        | True =>
+          jackpotEarnings <- jackpot;
+          onePercent = builtin div jackpotEarnings divideTotal;
+          jackpotEarnings = builtin mul onePercent jackpotWinnerCut;
+          devCut = builtin mul onePercent jackpotDevFee;
+          
+          developerVault := devCut;
+          jackpot := zero;
+          
+          msg = {_tag: "";
+            _recipient: _sender;
+            _amount: jackpotEarnings;
+            code: successful_withdraw };
+          msgs = one_msg msg;
+          send msgs
+        | False =>
+          msg = {_tag: "";
+            _recipient: _sender;
+            _amount: zero;
+            code: not_owner_code };
+          msgs = one_msg msg;
+          send msgs
+        end
+    | False =>
+      msg = {_tag: "";
+        _recipient: _sender;
+        _amount: zero;
+        code: game_not_ended };
+      msgs = one_msg msg;
+      send msgs
+  end
+end
+
+transition buyKey(keys: Uint128)
+  endBlock <- timer;
+  currentBlock <- & BLOCKNUMBER;
+  after_deadline = builtin blt endBlock currentBlock;
+  
+  totalKeys <- keySupply;
+  first_buy = builtin eq totalKeys zero;
+  
+  match after_deadline with
+  | True =>
+    match first_buy with
+      | True =>
+          startBlock = Uint32 20;
+          newBlock = builtin badd currentBlock startBlock;
+          timer := newBlock
+      | False =>
+        msg = {_tag: "";
+          _recipient: _sender;
+          _amount: zero;
+          code: game_ended};
+        msgs = one_msg msg;
+        send msgs
+    end
+  | False =>
+    price <- keyPrice;
+    increaseByAmount <- increaseKeyPriceBy;
+    increaseAmount = builtin mul increaseByAmount keys;
+    totalPrice = builtin mul keys price;
+    totalPrice = builtin add totalPrice increaseAmount;
+    totalPrice = builtin sub totalPrice increaseByAmount;
+    
+    ninetyNinePercent = Uint128 99;
+    
+    priceFluctuationMargin = builtin div totalPrice divideTotal;
+    priceFluctuationMargin = builtin mul priceFluctuationMargin ninetyNinePercent;
+    
+    valid_amount = builtin lt _amount priceFluctuationMargin;
+    match valid_amount with
+      | True =>
+        msg = {_tag: "";
+         _recipient: _sender;
+         _amount: zero;
+         code: not_enough_zil_code};
+        msgs = one_msg msg;
+        send msgs
+      | False =>
+        accept;
+        
+        winningAddress := _sender;
+              
+        user_exists <- exists players[_sender]; 
+        match user_exists with
+          | True =>
+            playerList <- players;
+            playerKeys = builtin get playerList _sender;
+            
+            match playerKeys with
+            | None =>
+              msg  = {_tag : ""; _recipient : _sender; _amount : Uint128 0; code : code_invalid_params};
+              msgs = one_msg msg;
+              send msgs
+            | Some currentKeys =>
+             newKeyAmount = builtin add currentKeys keys;
+             players[_sender] := newKeyAmount
+            end
+            
+          | False =>
+            players[_sender] := keys;
+            playerWithdrawHistory[_sender] := zero
+        end;
+        
+        blockIncrease = Uint32 4;
+        keysUint = builtin to_uint32 keys;
+        match keysUint with
+          | Some res =>
+            blockIncrease = builtin mul blockIncrease res;
+            newBlock = builtin badd endBlock blockIncrease;
+            
+            totalSize = builtin bsub newBlock currentBlock;
+            
+            maxBlockLength = Int256 2979;
+            
+            ltMax = builtin lt totalSize maxBlockLength;
+            match ltMax with
+              | True =>
+                timer := newBlock
+              | False =>
+                (* currentblock plus max *)
+                blockIncrease = Uint32 2979;
+                oneDayIncrease = builtin badd currentBlock blockIncrease;
+                timer := oneDayIncrease
+            end
+          | None =>
+          
+        end;
+        
+        currentJackpot <- jackpot;
+        currentPlayerDividends <- playerDividends;
+        currentKeySupply <- keySupply;
+        
+        addToJackpot = builtin div _amount divideTotal;
+        addToJackpot = builtin mul addToJackpot jackpotExclFee;
+        addToJackpot = builtin add currentJackpot addToJackpot;
+        
+        addToPlayerDividends = builtin div _amount divideTotal;
+        addToPlayerDividends = builtin mul addToPlayerDividends dividendKeyFee;
+        addToPlayerDividends = builtin add currentPlayerDividends addToPlayerDividends;
+        
+        currentKeySupply = builtin add currentKeySupply keys;
+        
+        jackpot := addToJackpot;
+        playerDividends := addToPlayerDividends;
+        keySupply := currentKeySupply;
+        
+        newKeyPrice = builtin add increaseAmount price;
+        keyPrice := newKeyPrice;
+        
+        msg = {_tag: ""; 
+          _recipient: _sender; 
+         _amount: zero; 
+         code: accepted_code};
+        msgs = one_msg msg;
+        send msgs
+    end
+  end
+end

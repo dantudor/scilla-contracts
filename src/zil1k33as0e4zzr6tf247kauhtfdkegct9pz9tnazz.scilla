@@ -1,0 +1,17 @@
+scilla_version 0
+
+library Test
+let one:Uint128 = Uint128 10000000000
+let addr: ByStr20 = 0xb7fa0e5fd26703687e1ce04c31056ad2f51671fc
+let one_msg = fun(msg: Message) =>
+    let nil_msg = Nil {Message} in
+    Cons {Message} msg nil_msg
+contract Test()
+
+transition send_zil()
+accept;
+  msg = {_tag: "AddFunds"; _recipient: addr; _amount: one};
+  msgs = one_msg msg;
+  send msgs
+  
+end

@@ -1,0 +1,417 @@
+scilla_version 0
+
+import IntUtils
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+library FrankdropLib
+
+(* Event emitted when the contract is initialized *)
+let mk_contract_initialized_event =
+  { _eventname : "Contract initialized" }
+
+  
+let one_msg =
+  fun (m : Message) =>
+    let e = Nil {Message} in
+    Cons {Message} m e
+  
+  
+type Error =
+| NonOwnerCannotCall
+| NonRecoveryCannotCall  
+| InsufficientFunds
+| NFTSoldOut
+| CodeContractNotPaused
+| CodeContractPaused
+| DateNotFound
+
+(* Error events *)
+let mk_error_event =
+  fun (err : Error) =>
+  let err_code = 
+    match err with
+    | NonOwnerCannotCall        => Int32 -1
+    | NonRecoveryCannotCall     => Int32 -2
+    | InsufficientFunds         => Int32 -3
+    | NFTSoldOut                => Int32 -4
+    | CodeContractNotPaused     => Int32 -5
+    | CodeContractPaused        => Int32 -6
+    | DateNotFound              => Int32 -7
+    end in
+    { _exception : "Error"; code : err_code }
+
+let false = False
+let true = True
+let zero = Uint128 0
+let one = Uint128 1
+let big_zero = Uint256 0
+let big_one = Uint256 1
+let num_contender = Uint32 1981
+let num_king = Uint32 1985
+let num_dominate = Uint32 1995
+
+(***************************************************)
+(*             The contract definition             *)
+(*                                                 *)
+(* This contract enables an NFT lot to be sold     *)
+(* to individual investors in a decentralized and  *)
+(* fair manner.                                    *)
+(*                                                 *)
+(* WARNING: If the owner loses their private key   *)
+(* they will be unable to interact with the smart  *)
+(* contract, for this reason a recovery wallet may *)
+(* be desirable to set in order to prevent losses. *)
+(*                                                 *)
+(***************************************************)
+contract Frankdrop
+(
+owner           : ByStr20,
+nft_address     : ByStr20,
+dominate_init_price : Uint128,
+king_init_price : Uint128,
+contender_init_price : Uint128,
+dominate_limit      : Uint256,
+king_limit      : Uint256,
+contender_limit      : Uint256,
+dominate_CID        : String,
+king_CID        : String,
+contender_CID        : String
+)
+
+(*               Field Definitions              *)
+field wallet_owner: ByStr20 = owner
+field paused : Bool = false
+field pending_owner : Option ByStr20 = None {ByStr20}
+field contender_next:Uint256 = big_zero
+field contender_stop:Uint256 = contender_limit
+field king_next:Uint256 = big_zero
+field king_stop:Uint256 = king_limit
+field dominate_next:Uint256 = big_zero
+field dominate_stop:Uint256 = dominate_limit
+field contender_price: Uint128 = contender_init_price
+field king_price: Uint128 = king_init_price
+field dominate_price: Uint128 = dominate_init_price
+
+(*                Begin Procedures              *)
+
+procedure ThrowError (err : Error)
+  e = mk_error_event err;
+  throw e
+end
+
+procedure IsOwner()
+  wallet <- wallet_owner;
+  is_wallet_owner = builtin eq wallet _sender;
+  match is_wallet_owner with
+  | True => 
+  | False =>
+    err = NonOwnerCannotCall;
+    ThrowError err
+  end
+end
+
+procedure IsPaused()
+  pause_status <- paused;
+  match pause_status with
+  | False => 
+    err = CodeContractNotPaused;
+    ThrowError err
+  | True =>
+  end
+end
+procedure IsNotPaused()
+  pause_status <- paused;
+  match pause_status with
+  | True => 
+    err = CodeContractPaused;
+    ThrowError err
+  | False =>
+  end
+end
+
+(*  Mint an NFT based on the amount passed in                 *)
+(*  If the amount is more than _balance it will stake the     *)
+procedure mint_for(date: Uint32, buyer: ByStr20)
+  is_contender = builtin eq date num_contender;
+  match is_contender with
+  |True => 
+    old_amt <- contender_next;
+    new_amt = builtin add old_amt big_one;
+    contender_next := new_amt;
+    msg_to_recipient = {_tag: "Mint"; _recipient: nft_address ;to: buyer; token_uri: contender_CID; _amount:zero};
+    msgs = one_msg msg_to_recipient;
+    send msgs
+  |False => 
+    is_king = builtin eq date num_king;
+    match is_king with
+    | True =>
+      old_amt <- king_next;
+      new_amt = builtin add old_amt big_one;
+      king_next := new_amt;
+      msg_to_recipient = {_tag: "Mint"; _recipient: nft_address ;to: buyer; token_uri: king_CID; _amount:zero};
+      msgs = one_msg msg_to_recipient;
+      send msgs
+    | False =>
+    is_dominate = builtin eq date num_dominate;
+    match is_dominate with
+    | True => 
+      old_amt <- dominate_next;
+      new_amt = builtin add old_amt big_one;
+      dominate_next := new_amt;
+      msg_to_recipient = {_tag: "Mint"; _recipient: nft_address ;to: buyer; token_uri: dominate_CID; _amount:zero};
+      msgs = one_msg msg_to_recipient;
+      send msgs
+    | False =>
+      err = DateNotFound;
+      ThrowError err
+    end
+    end
+  end
+end
+
+procedure update_price(date: Uint32, price: Uint128)
+is_contender = builtin eq date num_contender;
+  match is_contender with
+  |True => 
+    contender_price := price;
+    e = {_eventname: "ContenderPriceUpdate"; date: date; new_price:price}
+  |False => 
+    is_king = builtin eq date num_king;
+    match is_king with
+    | True => 
+      king_price := price;
+      e = {_eventname: "KingPriceUpdate"; date: date; new_price:price}
+    | False =>
+    is_dominate = builtin eq date num_dominate;
+    match is_dominate with
+    | True => 
+      dominate_price := price;
+      e = {_eventname: "DominatePriceUpdate"; date: date; new_price:price}
+    | False =>
+      err = DateNotFound;
+      ThrowError err
+    end
+    end
+  end
+end
+
+procedure  NotSoldOut(date:Uint32)
+is_contender = builtin eq date num_contender;
+  match is_contender with
+  |True =>
+    next <- contender_next;
+    stop <- contender_stop;
+   any_left = builtin lt next stop;
+   match any_left with
+    |False => 
+      err = NFTSoldOut; 
+      ThrowError err
+    |True =>
+    end
+  |False => 
+    is_king = builtin eq date num_king;
+    match is_king with
+    | True => 
+      next <- king_next;
+      stop <- king_stop;
+      any_left = builtin lt next stop;
+      match any_left with
+    |False => 
+      err = NFTSoldOut; 
+      ThrowError err
+    |True =>
+    end
+    | False =>
+    is_dominate = builtin eq date num_dominate;
+    match is_dominate with
+    | True => 
+      next <- dominate_next;
+      stop <- dominate_stop;
+      any_left = builtin lt next stop;
+      match any_left with
+    |False => 
+      err = NFTSoldOut; 
+      ThrowError err
+    |True =>
+    end
+    | False =>
+      err = DateNotFound;
+      ThrowError err
+    end
+    end
+  end
+end
+
+
+(*                    Begin Transitions                       *)
+transition AddFunds()
+  IsNotPaused;
+  accept
+end
+
+
+
+transition Pause()
+  IsNotPaused;
+  IsOwner;
+  pause_status <- paused;
+  match pause_status with 
+  | True =>
+    err = CodeContractPaused;
+    ThrowError err
+  | False =>
+    paused := true;
+    e = { _eventname : "Contract Paused" };
+    event e
+    end
+end
+
+transition Resume()
+  IsPaused;
+  IsOwner;
+  pause_status <- paused;
+  match pause_status with 
+  | False =>
+    err = CodeContractPaused;
+    ThrowError err
+  | True =>
+    paused := false;
+    e = { _eventname : "Contract Unpaused" };
+    event e
+    end
+end
+
+
+
+(*      SAFE OWNERSHIP TRANSFER TRANSITIONS   *)
+
+transition RequestOwnershipTransfer(new_owner: ByStr20)
+  IsOwner;
+  po = Some {ByStr20} new_owner;
+  pending_owner := po
+end
+
+transition ConfirmOwnershipTransfer()
+  IsOwner;
+  optional_po <- pending_owner;
+  match optional_po with
+  | Some pend_owner =>
+      caller_is_new_owner = builtin eq _sender pend_owner;
+      match caller_is_new_owner with
+      | True =>
+          (* transfer ownership *)
+          wallet_owner := pend_owner;
+          none = None {ByStr20};
+          pending_owner := none
+      | False => (* the caller is not the new owner, do nothing *)
+      end
+  | None => (* ownership transfer is not in-progress, do nothing *)
+  end
+end
+
+  
+(*       Vending Logic          *)
+transition buy(date: Uint32)
+  IsNotPaused;
+  is_contender = builtin eq date num_contender;
+  match is_contender with
+  |True =>
+    next <- contender_next;
+    stop <- contender_stop;
+   any_left = builtin lt next stop;
+   match any_left with
+    |False => 
+      err = NFTSoldOut; 
+      ThrowError err
+    |True =>
+     price <- contender_price;
+     enough = builtin lt price _amount;
+     match enough with
+      |False => 
+        err = InsufficientFunds; 
+        ThrowError err
+      |True =>
+          mint_for date _sender;
+          accept
+      end
+   end
+  |False => 
+      is_king = builtin eq date num_king;
+      match is_king with
+      | True =>
+        next <- king_next;
+        stop <- king_stop;
+        any_left = builtin lt next stop;
+        match any_left with
+      |False => 
+        err = NFTSoldOut; 
+        ThrowError err
+      |True =>
+        price <- king_price;
+        enough = builtin lt price _amount;
+        match enough with
+      |False => 
+        err = InsufficientFunds; 
+        ThrowError err
+      |True =>
+          mint_for date _sender;
+          accept
+        end
+      end
+      | False =>
+      is_dominate = builtin eq date num_dominate;
+      match is_dominate with
+      | True =>
+        next <- dominate_next;
+        stop <- dominate_stop;
+        any_left = builtin lt next stop;
+        match any_left with
+      |False => 
+        err = NFTSoldOut; 
+        ThrowError err
+      |True =>
+        price <- dominate_price;
+        enough = builtin lt price _amount;
+        match enough with
+      |False => 
+        err = InsufficientFunds; 
+        ThrowError err
+      |True =>
+          mint_for date _sender;
+          accept
+      end
+    end
+      | False =>
+        err = DateNotFound;
+        ThrowError err
+    end
+    end
+  end
+end
+
+
+transition Donate()
+  IsNotPaused; 
+  accept
+end
+
+transition WithdrawalFunds(amount:Uint128, recipient: ByStr20)
+IsOwner;
+IsNotPaused;
+msg_to_recipient = {_tag: "AcceptFunds"; _recipient: recipient ; _amount: amount};
+msgs = one_msg msg_to_recipient;
+send msgs
+end
+
+(*NOTE: new price will be set in Qa so convert ZIL*)
+transition UpdatePrice(date: Uint32, new_price: Uint128)
+IsNotPaused;
+IsOwner;
+update_price date new_price
+end
+
+transition  MintCallBack(recipient: ByStr20, token_id:Uint256, token_uri:String)
+end
+

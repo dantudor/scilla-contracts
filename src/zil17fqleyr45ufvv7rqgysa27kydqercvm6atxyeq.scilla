@@ -1,0 +1,24 @@
+scilla_version 0
+
+import BoolUtils IntUtils
+library TestNoLoss
+let one: Uint128 = Uint128 1000000000000
+
+let one_msg = fun(msg: Message) =>
+    let nil_msg = Nil {Message} in
+    Cons {Message} msg nil_msg
+    
+contract TestStaking(owner: ByStr20)
+
+field staking_contract: ByStr20 = 0xc2d6a5b60c93eb85021b87d6e89a7570f72d66c1
+
+transition stake_zil(ssn_addr: ByStr20)
+  staking_contract_address <- staking_contract;
+  msg = {
+      _recipient: staking_contract_address;
+      _amount: one;
+      _tag: "DelegateStake"
+  };
+  msgs = one_msg msg;
+  send msgs
+end

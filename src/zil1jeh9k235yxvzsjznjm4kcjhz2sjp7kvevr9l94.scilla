@@ -1,0 +1,36 @@
+(***************************************************)
+(*                 Scilla version                  *)
+(***************************************************)
+
+scilla_version 0
+
+contract NdovuBlock
+(owner: ByStr20)
+
+field blocks : Map String String = Emp String String
+
+transition saveBlock(id: String, block: String)
+  accept;
+  
+    is_authorized = builtin eq _sender owner;
+    
+    match is_authorized with
+    |False =>
+      e = {_eventname: "authorization status"; status:  "not authorized"; sender: _sender ; owner: owner};
+      event e
+    |True =>
+      blocks[id] := block;
+      keyExists <- exists blocks[id];
+      
+      match keyExists with
+        |False =>
+          e = {_eventname: "addition status"; status:  "block addition not successful"; block: "none"};
+          event e
+        |True =>
+          e = {_eventname: "addition status"; status: "block successfully added"; block: block};
+          event e
+        end
+    end
+  
+
+end

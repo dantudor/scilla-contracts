@@ -1,0 +1,13 @@
+scilla_version 0
+
+contract TestDelegate(owner: ByStr20)
+
+transition AddFunds()
+  accept;
+  e = {
+        _eventname: "ssn";
+        amount: _amount;
+        sender: _sender
+  };
+  event e
+end

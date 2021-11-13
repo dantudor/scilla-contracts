@@ -1,0 +1,544 @@
+scilla_version 0
+
+(*      ,;MMMM..
+   ,;:MM"MMMMM.
+,;.MM::M.MMMMMM:
+""::.;'MMMMMMMMM
+       "'""MMMMM;
+           ':MMMM.
+            'MMMM;
+             :MMMM;.
+              MMMMMM;...
+              MMMMMMMMMMMMM;.;..
+              MMMMMMMMMMMMMMMMMMM...
+              MMMMMM:MMMMMMMMMMMMMMM;...       ..:
+              MMMMMM;MMMMMMMMMMMMM:MMMMMMM:MMMM:M
+              :MMMMMM:NINESMMMMMMMMM.:::;:::;;:'
+              ':MMMMMMM:NEEKO;MM:M;.MMM:';::M:'
+               ':MMMMMM;M;;BUCKAROO::::;MM:""
+                 'MMMMMMMM;M;:GREASYMMMMMM"
+                  ''MMMMMMMMMMMMMMMMMMMMM"
+   Non              ':MMMMMMMMMMMMMMMM"'
+   Fungible            '':MMMMMMMMMMM"'
+   Ducks                  ':MMMMMM""'
+   Proxy                     .
+                             :
+                            ::
+                       ,..;.M'
+                      ,;;MM:'
+                        '"'
+*)
+
+import PairUtils ListUtils IntUtils BoolUtils
+library DuckNFTProxy
+
+let one_msg = 
+  fun (msg : Message) => 
+  let nil_msg = Nil {Message} in
+    Cons {Message} msg nil_msg
+    
+let u128_zero = Uint128 0
+let u128_one = Uint128 1
+let true = True
+let false = False
+
+
+type Error =
+| UserNeedToPay
+| DuckNameTooLong
+| NoMoreDucksToMint
+| NoMoreDucksToGenerate
+| UserAlreadyPaid
+| NotCorrectAmountForRename
+| UserIsBlacklisted
+| UserIsNotOwner
+| NotCorrectAmountForMint
+| NotCorrectAmountForRegen
+| PreEventError
+
+let make_error =
+  fun (result: Error) =>
+    let result_code = 
+      match result with
+      | UserNeedToPay              => Int32 -1
+      | DuckNameTooLong            => Int32 -2
+      | NoMoreDucksToMint          => Int32 -3 
+      | NoMoreDucksToGenerate      => Int32 -4
+      | UserAlreadyPaid            => Int32 -5
+      | NotCorrectAmountForRename  => Int32 -6
+      | UserIsBlacklisted          => Int32 -7
+      | UserIsNotOwner             => Int32 -8
+      | NotCorrectAmountForMint    => Int32 -9
+      | NotCorrectAmountForRegen   => Int32 -10
+      | PreEventError              => Int32 -11
+       end
+    in
+    { _exception : "Error"; code : result_code; res : result}
+
+
+contract DuckNFTProxy
+(
+  contract_owner                                  : ByStr20,
+  max_duck_name_length                            : Uint32,    (* 32   *)
+  max_duck_mint_count                             : Uint128,   (* 8192 *)
+  duck_nft_contract_address                       : ByStr20,   
+  duck_approved_minter_address                    : ByStr20,
+  duck_fungible_token_address                     : ByStr20,
+  duck_community_wallet_address                   : ByStr20,
+  duck_exchangeable_nft_address                   : ByStr20
+)               
+
+(* @dev : monitored maps *)
+field wallet_paid_map                             : Map ByStr20 Uint128 = Emp ByStr20 Uint128 
+field wallet_regen_map                            : Map Uint256 Uint256 = Emp Uint256 Uint256
+(* @dev : counter used for quadratic *)
+field current_duck_count                          : Uint128             = Uint128 0
+(* @dev : counter used for backend *)
+field current_regen_count                         : Uint128             = Uint128 0
+(* @dev : counter used for backend *)
+field max_regen_global                            : Uint128             = Uint128 2048
+field rename_cost                                 : Uint128             = Uint128 30000000000000  (* 30 zils*)
+field regenerate_cost                             : Uint128             = Uint128 5               (* 0.2 duck*)
+(* @dev : curve vars *)
+field y                                           : Uint128             = Uint128 25000000
+field c                                           : Uint128             = Uint128 12000000000000 (*ADD TWO ZEROS *)
+(* @dev : dynamic price of quadratic at postion[current_duck_count] *)
+field duck_price_zils                             : Uint128             = Uint128 12000000000000 (*ADD TWO ZEROS *) (* init pos[1] = 1200 *)
+field is_preevent_bool                            : Bool                = true
+
+(* @dev : overriden implemented contracts *)
+field implemented_duck_nft_contract_address       : ByStr20             = duck_nft_contract_address 
+field implemented_duck_minter_address             : ByStr20             = duck_approved_minter_address
+field implemented_duck_fungible_token_address     : ByStr20             = duck_fungible_token_address 
+field implemented_duck_community_wallet_address   : ByStr20             = duck_community_wallet_address
+field implemented_duck_exchangeable_nft_address   : ByStr20             = duck_exchangeable_nft_address
+
+
+(********************************************************************************************************************************)
+
+
+(* @dev :  *)
+procedure ThrowError(err: Error)
+  e = make_error err;
+  throw e
+end
+
+(* @dev : y = 0.000025(x^2) + 1200 *)
+procedure updateMintCurve()
+  current_count <- current_duck_count;
+  const1 <- y;
+  const2 <- c;
+  calc1 = builtin mul current_count current_count;
+  calc2 = builtin mul calc1 const1;
+  calc3 = builtin add calc2 const2;
+  duck_price_zils := calc3
+end
+
+(* @dev : errors in the preevent *)
+procedure errorIfPreEvent()
+  current_status <- is_preevent_bool;
+  is_preevent = andb true current_status;
+  match is_preevent with
+  | False =>
+  | True =>
+    err = PreEventError;
+    ThrowError err
+  end
+end
+
+(* @dev : returns an error if user has already paid/in map state *)
+procedure senderNotPendingNFT()
+  local_duck_paid_map <- wallet_paid_map;
+  has_paid = builtin contains local_duck_paid_map _sender;
+  match has_paid with
+    | False => 
+    | True => 
+  err = UserAlreadyPaid;
+  ThrowError err
+  end
+end
+
+(* @dev : returns an error if user has already paid/in map state *)
+procedure senderNotPendingRegen(this_token_id: Uint256)
+  local_wallet_regen_map <- wallet_regen_map;
+  has_regened = builtin contains local_wallet_regen_map this_token_id;
+  match has_regened with
+    | False => 
+    | True => 
+    err = UserAlreadyPaid;
+    ThrowError err
+  end
+end
+
+(* @dev : returns an error if user not sending exactly postion[current_duck_count] *)
+procedure senderSendingExactCurveAmount()
+  local_duck_price <- duck_price_zils;
+  is_enough = builtin eq _amount local_duck_price;
+  match is_enough with
+  | True =>   
+  | False =>
+    err = NotCorrectAmountForMint;
+    ThrowError err 
+  end
+end
+
+(* @dev : returns an error if user not sending exactly duck_amount*)
+procedure senderSendingExactDuckAmount(duck_amount: Uint128)
+  local_regenerate_cost <- regenerate_cost;
+  is_enough = builtin eq duck_amount local_regenerate_cost;
+  match is_enough with
+  | True =>
+  | False =>
+   err = NotCorrectAmountForRegen;
+   ThrowError err 
+  end
+end
+
+(* @dev : returns an error if user not sending exactly rename_amount *)
+procedure senderSendingExactRenameAmount()
+  local_rename_cost <- rename_cost;
+  correct_amount_rename = builtin eq _amount local_rename_cost;
+  match correct_amount_rename with
+  | True => 
+  | False => 
+      err = NotCorrectAmountForRename;
+      ThrowError err
+  end
+end
+
+(* @dev : returns an error if there are no more ducks to mint *)
+procedure areDucksToMint(current_supply: Uint128)
+  is_max_supply = builtin eq current_supply max_duck_mint_count;
+  match is_max_supply with
+  | False => 
+  | True => 
+      err = NoMoreDucksToMint;
+      ThrowError err
+  end
+end
+
+(* @dev : returns an error if there are no more ducks to mint *)
+procedure areRegeneratesLeft(current_regen_count: Uint128)
+  local_max_regen_global <- max_regen_global;
+  is_max_supply = builtin eq current_regen_count local_max_regen_global;
+  match is_max_supply with
+  | False => 
+  | True => 
+      err = NoMoreDucksToMint;
+      ThrowError err
+  end
+end
+
+(* @dev : returns an error if the name is longer than max_length *)
+procedure isValidNameLength(this_duck_name: String)
+  this_name_length = builtin strlen this_duck_name;
+  is_valid_length = uint32_le this_name_length max_duck_name_length;
+  match is_valid_length with
+  | True => 
+  | False =>   
+    err = DuckNameTooLong;
+    ThrowError err
+  end
+end
+
+(* @dev : returns an error if the sender is not the minters address *)
+procedure isBackendMinter()
+  local_duck_minter_address <- implemented_duck_minter_address;
+  is_backend_minter = builtin eq local_duck_minter_address _sender;
+  match is_backend_minter with
+    | True => 
+    | False => 
+    err = UserIsNotOwner;
+    ThrowError err
+  end
+end
+
+(* @dev : returns an nested error (NFT) if the sender does not own this tokenID - NFD *)
+procedure userOwnsToken(this_token_id: Uint256)
+  local_duck_nft  <- implemented_duck_nft_contract_address;
+  check_owner_call = {
+            _tag: "CheckTokenOwner";
+            _recipient: local_duck_nft;
+            _amount: Uint128 0;
+            token_id: this_token_id;
+            address: _sender
+            };
+  msgs1 = one_msg check_owner_call;
+  send msgs1
+end
+
+(* @dev : returns an nested error (NFT) if the sender does not own this tokenID, burns tokenID  *)
+procedure burnExchangeableNFT(this_exchangeable_token_id: Uint256)
+  local_duck_exchangeable  <- implemented_duck_exchangeable_nft_address;
+  check_owner_call = {
+            _tag: "Burn";
+            _recipient: local_duck_exchangeable;
+            _amount: Uint128 0;
+            token_id: this_exchangeable_token_id
+            };
+  msgs1 = one_msg check_owner_call;
+  send msgs1
+end
+
+procedure isContractOwner()
+ is_contract_owner = builtin eq _sender contract_owner;
+  match is_contract_owner with
+  | True => 
+  | False => 
+    err = UserIsNotOwner;
+    ThrowError err
+  end
+end
+
+procedure returnFunds()
+  bal <- _balance;
+  msg = {
+    _tag: "";
+    _recipient: contract_owner;
+    _amount: bal
+  };
+  msgs = one_msg msg;
+  send msgs
+end
+
+procedure incrementDuckCounter()
+  current_supply <- current_duck_count;
+  new_supply = builtin add current_supply u128_one;
+  current_duck_count := new_supply
+end
+
+procedure incrementRegenerateCounter()
+  current_regen <- current_regen_count;
+  new_regen = builtin add current_regen u128_one;
+  current_regen_count := new_regen
+end
+
+
+
+(* @dev : public *)
+(* @dev : allow the user to pay the specified price at postion[current_duck_count]  *)
+transition payForMint()
+  senderNotPendingNFT;
+  senderSendingExactCurveAmount;
+  incrementDuckCounter;
+  
+  wallet_paid_map[_sender] := _amount;
+  accept;
+  updateMintCurve;
+  e = {_eventname: "userMadePaymentSuccess"};
+  event e
+end
+
+(* @dev : public *)
+(* @dev : allow the user to swap a NFT earned from LP for an NFD  *)
+transition burnNFTForMint(this_exchangeable_token_id: Uint256)
+  senderNotPendingNFT;
+  burnExchangeableNFT this_exchangeable_token_id; (* @dev : this will error if they dont own *)
+  
+  wallet_paid_map[_sender] := _amount;
+  incrementDuckCounter;
+  updateMintCurve;
+  e = {_eventname: "userMadeExchangeSuccess"};
+  event e
+  
+end
+
+(* @dev : public *)
+(* @dev : user needs to call inc allowance on fungible  *)
+(* @dev : allow the user to pay the static price of regenerate_cost to regenerate a specific duckID *)
+transition payForRegenerate(this_token_id: Uint256, duck_amount: Uint128)
+
+  errorIfPreEvent;
+  local_current_regen_count <- current_regen_count;
+  areRegeneratesLeft local_current_regen_count;
+  userOwnsToken this_token_id;
+  senderNotPendingRegen this_token_id;
+  senderSendingExactDuckAmount duck_amount;
+         
+  local_duck_community <- implemented_duck_community_wallet_address;
+  local_duck_fungible  <- implemented_duck_fungible_token_address;
+  
+  send_duck_call = {
+    _tag: "TransferFrom";
+    _recipient: local_duck_fungible;
+    _amount: Uint128 0;
+    from: _sender;
+    to: local_duck_community;
+    amount: duck_amount
+    };
+    
+  wallet_regen_map[this_token_id] := this_token_id;
+  msgs2 = one_msg send_duck_call;
+  send msgs2;
+  e = {_eventname: "userMadeRegenPaymentSuccess"};
+  event e
+end
+
+(* @dev : public *)
+(* @dev : allow the user to pay the static price of rename_cost to rename duck *)
+transition payForRename(this_token_id: Uint256, this_new_duck_name: String)
+  senderSendingExactRenameAmount;
+     local_nft_contract <- implemented_duck_nft_contract_address;
+     rename_call = {
+                _tag: "renameDuck";
+                _recipient: local_nft_contract;
+                _amount: Uint128 0;
+                token_id: this_token_id;
+                new_duck_name: this_new_duck_name;
+                sender_wallet: _sender
+              };
+      msgs = one_msg rename_call;
+      send msgs;
+      accept;
+      e = {_eventname: "userMadePaymentSuccess"};
+      event e
+end
+
+(* @dev : permissioned - proxy *)
+(* @dev : called by backend, mints to buyers in the paid map *)
+transition proxyMint(this_to: ByStr20, this_token_uri: String, this_token_metadata: String, this_duck_name: String)
+  isBackendMinter;
+
+  isValidNameLength this_duck_name;
+  
+  local_nft_contract <- implemented_duck_nft_contract_address;
+  mint_call = {
+    _tag: "Mint";
+    _recipient: local_nft_contract;
+    _amount: Uint128 0;
+    to: this_to;
+    token_uri: this_token_uri;
+    token_metadata: this_token_metadata;
+    duck_name: this_duck_name
+  };
+  msgs = one_msg mint_call;
+  send msgs;
+  
+  delete wallet_paid_map[this_to];
+
+  e = {_eventname: "paidUserCallingMint"; amount: _amount};
+  event e
+end
+
+(* @dev : permissioned - proxy *)
+(* @dev : called by backend, regenerates a mint to payers in the regen_map *)
+transition proxyRegenerate(this_token_id: Uint256, this_new_duck_uri: String, this_new_duck_metadata: String)
+  isBackendMinter;
+
+  local_nft_contract <- implemented_duck_nft_contract_address;
+  regenerate_call = {
+    _tag: "regenerateDuck";
+    _recipient: local_nft_contract;
+    _amount: Uint128 0;
+    token_id: this_token_id;
+    new_duck_uri: this_new_duck_uri;
+    new_duck_metadata: this_new_duck_metadata
+  };
+  msgs = one_msg regenerate_call;
+  send msgs;
+  
+  delete wallet_regen_map[this_token_id];
+  incrementRegenerateCounter;
+
+  e = {_eventname: "paidUserCallingMint"; amount: _amount};
+  event e
+end
+
+(* @dev : permissioned - owner *)
+(* @dev : owner collect funds *)
+transition ownerCollect ()
+  isContractOwner;
+  returnFunds
+end
+
+(* @dev : permissioned - owner *)
+(* @dev : if needed  *)
+transition updateImplementation(new_duck_nft_contract_address: ByStr20, new_duck_minter_address: ByStr20,
+                                new_duck_fungible_token_address: ByStr20, new_duck_community_wallet_address: ByStr20,
+                                new_duck_exchangeable_nft_address: ByStr20)
+  isContractOwner;
+  implemented_duck_nft_contract_address       := new_duck_nft_contract_address;
+  implemented_duck_minter_address             := new_duck_minter_address;
+  implemented_duck_fungible_token_address     := new_duck_fungible_token_address;
+  implemented_duck_community_wallet_address   := new_duck_community_wallet_address;
+  implemented_duck_exchangeable_nft_address    := new_duck_exchangeable_nft_address
+end
+
+(* @dev : permissioned - owner *)
+(* @dev : allow regenerates  *)
+transition preeventOver()
+  isContractOwner;
+  is_preevent_bool:= false
+end
+
+(* @dev : permissioned - owner *)
+(* @dev : allow migrate to a new proxy  *)
+transition ProxyMigrate(new_contract: ByStr20)
+  isContractOwner;
+  
+  msg_to_new_contract = { 
+    _tag: "Migrate"; 
+    _recipient: new_contract;
+    _amount: u128_zero;
+    c_cdc: _this_address
+  };
+  msgs = one_msg msg_to_new_contract;
+  send msgs;
+  
+  msg_to_new_contractb = { 
+    _tag: "MigrateB"; 
+    _recipient: new_contract;
+    _amount: u128_zero;
+    c_crc: _this_address
+  };
+  msgs = one_msg msg_to_new_contractb;
+  send msgs
+end
+
+(* @dev : permissioned - owner *)
+(* @dev : sets new values from RSR   *)
+transition Migrate (
+  c_cdc: ByStr20 with contract 
+    field current_duck_count: Uint128
+  end
+)
+  new_cdc <- & c_cdc.current_duck_count;
+  current_duck_count := new_cdc
+end
+
+transition MigrateB(  c_crc: ByStr20 with contract 
+    field current_regen_count: Uint128
+  end)
+  new_crc <- & c_crc.current_regen_count;
+  current_regen_count := new_crc
+end
+
+
+
+(* @dev : owner  *)
+transition updateRenameCost(new_rename_cost: Uint128, new_regenerate_cost: Uint128)
+  isContractOwner;
+  rename_cost := new_rename_cost;
+  regenerate_cost := new_regenerate_cost
+end
+
+(* @dev : callback  *)
+transition RecipientAcceptTransfer(sender: ByStr20, recipient: ByStr20, amount: Uint128)
+end 
+
+(* @dev : callback  *)
+transition mintCallBack(recipient:ByStr20)
+end
+
+(* @dev : callback  *)
+transition IsTokenOwnerCallBack()
+end
+
+(* @dev : callback  *)
+transition TransferFromSuccessCallBack(initiator: ByStr20, sender: ByStr20, recipient: ByStr20, amount: Uint128)
+end
+
+(* @dev : callback  *)
+transition BurnCallBack(initiator: ByStr20, burn_address: ByStr20, token_id: Uint256)
+end
+                      

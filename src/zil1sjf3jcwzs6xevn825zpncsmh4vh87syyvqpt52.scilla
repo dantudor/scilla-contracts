@@ -1,0 +1,480 @@
+scilla_version 0
+
+(*
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMNhMMMMMNNmmmmdhhdmmMooMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMNMmsNmdsso+:::::--::/syhdNMMmNMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMNdyo/::-------.........--+ymNNNMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMmh+::------.................--ymNNydMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMNNNNho:-------.......```````````....:oNdmMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMNymms::-----.........```````````````...:hNMNMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMNINESMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMNho::-----........``````` `````````````:smNMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMNEEKOMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMNdmmNo/::-------........``````          `````:sMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMBUCKOMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMmoNds::---------.-:++/-..```````         ````:oNyyMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMGREASYMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMssMh+::-----------+amrit:...````          ````.-ysyMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMNNN+:::----------/ymduck+:`..``` `        ````./mssMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMNyNmy::::---------.:+wheny:.``````          ````-/MhyMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMmdy/:::-------.......---.```````    ```````````-+MddMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMNh+/:::---.........````````````````` ```````````-+MmmMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMNmNdy::::----.......```````````````````` `.-.`````..:+MdhMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMddMds::::----.....`````````````````````````-/::----:-+hMysMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMddNo/-::---......`````````````````````````-:+//////o:+hMNNMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMmy::::----.......````````````````````...:/++//////o:/oN+/MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMNMmy::::-----.............`````.........-:/++++++///++:+yNhyMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMy+My+-::----........................---:/+++++++sso/////yNhNMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMNNmo:-------................---...-/+oo++///++//+oo////+hN:hMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMNNNNNNNmdddddho:-------..................-----/+s+++++++++++//++///+ymmddMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMNNmhyso+++++++++++++/:------.................``.....-/+++++++++++++++++++++ohmNMdmMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMyhMNNdho+/::::::://////////::-----.................````````.-:++++++++++++++++++/+++shNshNMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMmddmyo+////////////:::://///:------...........................-:/+o+++++//++//////////odNh/MMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMNNNdyo/:////::::::::::::::::/:::--..................-...---...---::://+++++/////////::-://+hNMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMNsNMNhso///////::::::::::--::::::::---.......................--------::://///+++++///::::-----::sdMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMNNmdy+///////:::::::----:------:::---.......................-.----:::://////////////////:::----::ymMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMmyNNdo/////////::::---------------::---......`````````````.........----::::////:::::::::--://///::/+NMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMNmmy+///////:::-----------------::--.......``````````````````.`......----:::::::::::----..---:://///ymN:hMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMNNNo+//////:::---------...------::--......````````````````````````.....---------------.........--::///ohMNNMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMm:mmh/////::::-------...........--::-.......````````` ``````````````````...........................-::////dmd:mMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMNh+//:::::::-----.........---------.....``````````          ``````````````````........`.``````.....--:::+shmmNMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMNMho/::::::::---.......---.---------.....`````````           `````````````````````````````````````.....-::///ohmMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMM/hNd+/::::::::----..----.....-------......``````````           ````````````````````````````````````````...--:////+smNNNMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMmsNmd+/::::-:::---------......----.........``````````` ```          ` ```````````````````````````````````....-:::////odmhNMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMmhNho/::::::::::----..........---.........````````````               `````````````````````````````````````....--::////oyNMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMds//::::::::::----........----........``````````````                    `````````````````````````````````.....--::///+ohmMNMMMMMMMMMMMMM
+MMMMMMMMMMMMNmo+//:::::::::-----......---.-.........```````````                          `````````````      ````````````.....--::////oymNddMMMMMMMMMMM
+MMMMMMMMMMNNds+//::::::---------................```````````````                          `````````           `````````````....---::///+ommd/mMMMMMMMMM
+MMMMMMMMMNMdy++//:::::-----------..............````````````````                     `    ``````                   ````````.......--:///+oydNMMMMMMMMMM
+MMMMMMMMNmhs+//:::::::----------.............````````````````         ```       `       ````   ````           ``.```````````......--::://+odNNNMMMMMMM
+MMMMMMMmhs////::--:::---...-----.............````````````````      `.-:::.`             ``     ````          ``:::-.````````.......--::://+ohmMMMMMMMM
+MMm+mNdo+///::::-::::--------...........```````````````````` ````.---:-::.`                                  `.::-----..````........---::///oymMysMMMM
+MMMmNho////::::::::----------..........```````````````````...---------:::``                     `             `-::------------......-----::/+osNmmMMMM
+MMMMds///:::::::::------...............```````````````..-----------::::.`                                      `.-:::------------....-----:://+ymMMMMM
+MMNMy+//::::::::------.................`````````````.-------------::-....``..............`    ``............`````..-::-----------:--..-----:://+hNMmNM
+MMNdo//::::-----------................`````````````.:----------------------------------::-`   .::----------------------------------:-..----::://ohNsyM
+MMNy+//:::::::----------..............`````.-:---.--:-------.......--------------------::-`   -::--------------------.......--------:----:::::///+dNMM
+NNmo///:::::::----------..............````--:-------------.........---------------------.`    `..--------------------.........--------------:::///sNMM
+MNd///::::::::-----------.................:-----------...............-:-.````   ``````              `````   ````-:-..............-----------:::://+mNM
+MNd///:::::::---------------..............:-------...................-:-.                                      `::-....................------:::///hmM
+MNh///:::::::---------------.............-::---------...............--:.`                                       .-:...............-----------:::///hmM
+MNd+//::::::::--------------.............-::------------------......--/-`                                       -::-......------------------::////+dNM
+MNd+///:::::::---------------.............:::------------------------:/-`                                       -:/-------------------------::////+dNM
+MNd+////::::::::--------------............::::::::::::::::::::------:/.`                                        `.::-------::::::::::::::::://///++dNM
+NNmo+////:::::::--::---------------.......-:/:://///////::::::::::::::`                                          `./::::::::::::////////::://////+odNM
+MMNho/////:/:::::::-----------------.......-://////////+////////////:.                                            `:////////////////////////:://++omNN
+MMNNs+////:/:::::::-----:---------------------------.---::::///::--.`                               ````````       .-::::////::::--------::::///++yNMN
+MMMMmy///////::::::::::::::---------------------...---..............````                 ````````...........```````..........-------------::://++oyNMM
+MMMMMmy//////:::::::::::::::---------------------------.---.............```````````````````........................---------------------::::///++smMMM
+MMMMmmNo+//////:::::::::::::::::------------------------------.......................```.........---.------......-------------:----::::::::://++shMmNM
+MMMMsyMyo///////////:::::::::::::::------:::::::--------------------...........................-------------..---------------:::::::::::::////++hmMMMM
+MMMMMMMmy+++/////////:::::::::::::::::::::::::::--------------------------................---.-------------------------:::::::::::::::::////+++sdMMMMM
+MMMMMNdMdy+++//////////////////::::::::::::::::::::--------------------------------------------------------------------::::::::::://://///+++osNNNMMMM
+MMMMMMMNNms++++///////////////////////://:::::::::::::--:::---:-----------------------------------------------::-------::::::://////////+++oosdMMNMMMM
+MMMMMMMMmdNhs++++++//////////////////////////::::::::::::::::::::::::::::::::::--------------------::::::::::::::::::::::////////////++++oooydMNMMMMMM
+MMMMMMMMhsMNmy+++++++++++++++++++++////////////////::///::::::::::::::::::::::::::::::::::::::::::::::::::::::::::///:://////////++++++oosshmNmMMMMMMM
+MMMMMMMMMMMmmNhyoo+++o+++++++++++++++++////////////////////////////////:::::::://:::::::::::::::::::::://::://////////////////++++++oooshmNMmmNMMMMMMM
+MMMMMMMMMMMMMNmmdyooooooooooo++++++++++++++++///++++++/////////////////////////////////////////:::::://///////////////////++++++++oooyhmMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMmNNNhysooooooooooo++ooooo+++++++++++++++++++++++++++/////////////////////////////////////////////////++++++++++++ooosydmmmMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMmdyyssooooooooooooooo++++++++++ooooo+ooo++++++++++++++///////////////////////++++++++//////++++++++++++ooooosydmNMyhNMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMNdhysssssosssooooooooooo+oooooooooooooooooo++++++++++++++++///+/++++++++++++++++o+++++++++++++oooooooossydmNMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMNNMNmddyysssssssssoooooooooooooooooooooooooo++++++++++++++++++++++++++++++++ooooooooooooooooooooosssydmNNmNMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMNmdyyyyssssssssssoooooossssssoooooooooooooooo+++++++ooo+oooooooooooooooooooooooooooooossssyhdNNMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMNdddhhyyyyyysyysssssssssssssssssssssoooooooooooooosssssssssssssssssssssssssssyyyyyyyyhddNMMMNMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMMNNmdddmmmhyyysyyyyyyssssssssssssssssssssyyyysyyyssyyyyyyyyyyyyyyyyyyyyyyyyhhdmNNNmmddhddmMmNMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMmmdhhdddddNmdhhhhyyyyyyyyyssyssssyyyyhmNNNNNNNNNNmmNNNNNNNmmmmmmmmmmmmmmmNNNMMMMMMMNddhhdmMydMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMNNmmdhyhhhNmmmNNNNdhyyyyyyyhhhhhhhdmmdmMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMNmhhyhdmMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMNmdydddhdmMNMMMmmNmmmmNNMMMMMMMMMhoMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMNmdhyyhdNMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMNNmhyyyhmMNMMMmNMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMNmhyyyydmMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMNmdhhyyyhmMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMmdMNmhysyydmMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMNdhyyyssyhNNNMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMNNMmmddyyyydmMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMmhsyyyyyyhdmmNNMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMysMMNmddddhhyyyhNNMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMmdysssssssyyyhhhdmmNNNNNNNmddmmNNNMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMNNNmdhhhhhhysssyyhNNMMNNMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMmdyyyyyysssssssyyhhhhhhhhhhhhhhhdmMMMMMMMMMMMMMMMMMMMMMNNNNNNNNNNNmmmdhhhhhhhyyssssyyyyyhdNNNMMMMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMNdhsssyyyyyyysssssyyyssssyyyyyyydmMmNMMMMMMMMMMMMMMMMMNmsyyyhhhyhhhhhhhhhhyyysssssyyyyyyyyyhmNhmNMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMmhyssssyyyyyyyyyyyyyyyyysysssoo+shmhNMMMMMMMMMMMMMMMMMMNdddhhhhhhhhhhhyysssssssyyyyyyyyyyyyyhdNdysMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMmdhsoossyyysssyhdmNNNNNNNmdssyyhmNNMMMMMMMMMMMMMMMMMMMMMMMNNNmhhyyyso++oossssssssssssssssyyyssdmmMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMNmmNmdddddddddmNMMMMMMMMMMMMNNMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMhso++//++ossssysssyyydddhyyyyyysdNMMMMMMMMMMMMMMMMMMMMMM
+MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMmNMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMNNmdhhdddmNNNNNNNNNNNMMMMNNNNNNNhdMMMMMMMMMMMMMMMMMMMMMM
+*)
+
+import PairUtils ListUtils IntUtils BoolUtils
+library DuckDeployerProxy
+
+(* strut
+contract_owner: ByStr20,
+name : String,
+symbol: String,
+*)
+type NFTDeploymentRequest               = | NFTDeploymentRequest of ByStr20 String String
+
+type Operation = | Add | Sub
+let u128_zero = Uint128 0
+let one = Uint256 1
+let add_operation = Add
+let sub_operation = Sub
+let nilByStr20 = Nil {ByStr20}
+
+let one_msg = 
+  fun (msg : Message) => 
+  let nil_msg = Nil {Message} in
+    Cons {Message} msg nil_msg
+
+let two_msgs =
+  fun (msg1 : Message) =>
+  fun (msg2 : Message) =>
+    let msgs_tmp = one_msg msg2 in
+      Cons {Message} msg1 msgs_tmp
+
+let listByStr20FilterOut = 
+  fun(list: List ByStr20) =>
+  fun(bs: ByStr20) =>
+    let listByStr20Filter = @list_filter ByStr20 in
+    let fn = fun(v: ByStr20) => 
+      let b = builtin eq v bs in
+       negb b in
+      listByStr20Filter fn list
+      
+let eqByStr20 =
+  fun(bs1: ByStr20) =>
+  fun(bs2: ByStr20) =>
+    builtin eq bs1 bs2
+
+let listByStr20Contains = 
+  fun(list: List ByStr20) =>
+  fun(bs: ByStr20) =>
+    let listMemByStr20 = @list_mem ByStr20 in
+      listMemByStr20 eqByStr20 bs list
+
+
+type Error =
+  | NotContractOwner
+  | NotCorrectAmountForDeploy
+  | NotBackend
+  | UserAlreadyQueuedForDeployment
+  | UserNotQueuedForDeployment
+  | UserDoesNotHaveDeployedContractAtAddress
+
+let make_error =
+  fun (result : Error) =>
+    let result_code = 
+      match result with
+      | NotContractOwner                          => Int32 -1
+      | NotCorrectAmountForDeploy                 => Int32 -2
+      | NotBackend                                => Int32 -3
+      | UserAlreadyQueuedForDeployment            => Int32 -4
+      | UserNotQueuedForDeployment                => Int32 -5
+      | UserDoesNotHaveDeployedContractAtAddress  => Int32 -6
+      end
+    in
+    { _exception : "Error"; code : result_code; res : result}
+
+contract DuckDeployerProxy
+(
+  contract_owner: ByStr20,
+  duck_backend_address: ByStr20,
+  non_fungible_duck_address: ByStr20
+)
+
+(* @Dev : Backend monitored *)
+field nft_contract_paid_map: Map ByStr20 NFTDeploymentRequest = Emp ByStr20 NFTDeploymentRequest
+
+(* @Dev : backend result contract:owner *)
+field user_deployed_contracts: List ByStr20 = nilByStr20
+
+
+(* @Dev : Fee to deploy *)
+field deploy_cost_non_holder:   Uint128   = Uint128 100000000000000
+
+(* @Dev : Fee to deploy *)
+field deploy_cost_holder:   Uint128   = Uint128 5000000000000
+
+(* @Dev : counter*)
+field amount_of_deployed_contract:  Uint256   = Uint256 0
+
+(* @Dev : test purposes*)
+field current_non_fungible_duck_address: ByStr20 = non_fungible_duck_address
+
+(* @Dev : backend address*)
+field current_duck_backend_address: ByStr20 = duck_backend_address
+
+(*                                Internal Transitions                                   *)
+
+
+(* @dev :  *)
+procedure ThrowError(err: Error)
+  e = make_error err;
+  throw e
+end
+
+(* @dev :  *)
+procedure returnFunds()
+  bal <- _balance;
+  msg = {
+    _tag: "";
+    _recipient: contract_owner;
+    _amount: bal
+  };
+  msgs = one_msg msg;
+  send msgs
+end
+
+(* @dev : returns an error if _sender is not owner *)
+procedure isContractOwner()
+  is_contract_owner = builtin eq contract_owner _sender;
+  match is_contract_owner with
+  | True => 
+  | False =>
+    err = NotContractOwner;
+    ThrowError err
+  end
+end
+
+(* @dev : returns an error if _sender is not the backend address *)
+procedure isBackendAddress()
+  cdba <- current_duck_backend_address;
+  is_backend_address = builtin eq cdba _sender;
+  match is_backend_address with
+  | True => 
+  | False =>
+    err = NotBackend;
+    ThrowError err
+  end
+end
+
+(* @dev : ensures users cannot be queued twice - payment *)
+procedure userNotQueued()
+  is_queued <- exists nft_contract_paid_map[_sender];
+  match is_queued with
+  | True => 
+    err =  UserAlreadyQueuedForDeployment;
+    ThrowError err
+  | False =>
+  end
+end
+
+(* @dev : ensures users exist in the paid map - storage (backend calls) *)
+procedure deployedUserIsQueued(deployed_contract_owner: ByStr20)
+  is_queued <- exists nft_contract_paid_map[deployed_contract_owner];
+  match is_queued with
+  | True => 
+  | False =>
+    err = UserNotQueuedForDeployment;
+    ThrowError err
+  end
+end
+
+(* @dev : ensures users have a contract at a particular address in deployed_contracts map *)
+procedure errorIfNoContractAtAddress(deployed_contract_address: ByStr20)
+  udc <- user_deployed_contracts;
+  contains_address = listByStr20Contains udc deployed_contract_address;
+  match contains_address with
+    | True => 
+    | False => 
+    err =  UserDoesNotHaveDeployedContractAtAddress;
+    ThrowError err
+  end
+end
+
+
+(*@Dev : No zero check required as cannot remove from zero contracts (map), just a counter *)
+procedure incrementCounter(operation: Operation)
+ match operation with
+  | Add =>
+    local_count <- amount_of_deployed_contract;
+    lc_plus_one = builtin add local_count one;
+    amount_of_deployed_contract := lc_plus_one
+  | Sub =>
+    local_count <- amount_of_deployed_contract;
+    lc_plus_one = builtin sub local_count one;
+    amount_of_deployed_contract := lc_plus_one
+  end
+end 
+
+(* @dev : calls the NFD contract, ensures the caller address has a duck *)
+procedure errorIfCallerHasNoDucks(caller_address: ByStr20)
+local_nft <- current_non_fungible_duck_address;
+  msg = {
+    _tag: "ErrorIfZeroDucks";
+    _recipient: local_nft;
+    _amount: u128_zero;
+    address: caller_address
+  };
+  msgs = one_msg msg;
+  send msgs
+end
+
+(* @dev : calls the NFD contract, ensures the caller address does not have a duck *)
+procedure errorIfCallerHasDucks(caller_address: ByStr20)
+local_nft <- current_non_fungible_duck_address;
+  msg = {
+    _tag: "ErrorIfUserHasDucks";
+    _recipient: local_nft;
+    _amount: u128_zero;
+    address: caller_address
+  };
+  msgs = one_msg msg;
+  send msgs
+end
+
+(* @dev : calls the NFD contract, ensures the caller address does not have a duck *)
+procedure callerHasCorrectDeployAmount(caller_owns_nft: Bool)
+  match caller_owns_nft with
+  | True => 
+    errorIfCallerHasNoDucks _sender;
+    local_deploy_cost_holder <- deploy_cost_holder;
+    is_enough = builtin eq _amount local_deploy_cost_holder;
+    match is_enough with
+    | True => 
+    | False => 
+      err = NotCorrectAmountForDeploy;
+      ThrowError err
+    end
+  | False => 
+    errorIfCallerHasDucks _sender;
+    local_deploy_cost_non_holder <- deploy_cost_non_holder;
+    is_enough = builtin eq _amount local_deploy_cost_non_holder;
+    match is_enough with
+    | True => 
+    | False => 
+      err = NotCorrectAmountForDeploy;
+      ThrowError err
+    end
+  end
+end
+
+procedure addToList(deployed_contract: ByStr20)
+  udc <- user_deployed_contracts;
+  udc_this_address = Cons {ByStr20} deployed_contract udc;
+  user_deployed_contracts := udc_this_address
+end
+  
+procedure removeFromList(deployed_contract: ByStr20)
+  udc <- user_deployed_contracts;
+  udc_minus_this = listByStr20FilterOut udc deployed_contract;
+  user_deployed_contracts := udc_minus_this
+end
+
+
+(*                                Public Transitions                                   *)
+
+
+
+(* @dev : public *)
+(* @dev : backend monitored *)
+(* @dev : User pays to deploy a nft contract. They need to pay the correct amount
+          Can't request deploy if requesting deployment already. 
+          Backend to monitor map and deploy a contract where the user requesting is the contract_owner *)
+transition payForDeploymentNFTContract(nft_deployment_request: NFTDeploymentRequest, caller_owns_nft: Bool)
+  userNotQueued;
+  callerHasCorrectDeployAmount caller_owns_nft;
+  
+  accept;
+  
+  nft_contract_paid_map[_sender] := nft_deployment_request;
+  incrementCounter add_operation;
+  e = {_eventname: "payForDeploymentNFTContractSuccess"; deployment_request : nft_deployment_request};
+  event e
+end
+
+
+
+
+(* @dev : public *)
+(* @dev : user can request for a deployed contract to be removed  *)
+transition userRemoveDeployedContract(deployed_contract_address: ByStr20)
+  errorIfNoContractAtAddress deployed_contract_address;
+  
+  removeFromList deployed_contract_address;
+
+  incrementCounter sub_operation;
+  e = {_eventname: "userRemoveDeployedContractSuccess"; removed_contract : deployed_contract_address};
+  event e
+end
+
+
+
+(*                               Backend Transitions                                   *)
+
+
+
+
+(* @dev : backend *)
+(* @dev : if a deployment map entry is found,the backend will call this with deployment params
+          remove the NFTDeploymentRequest row, add the resulting deployed_contract_addressdeployed_contract_address: ByStr20,
+
+deploy_type: DeploymentType
+*)
+transition deploymentRequestSuccess(deployed_contract_address: ByStr20, deployed_contract_owner: ByStr20)
+  isBackendAddress;
+  deployedUserIsQueued deployed_contract_owner;
+  
+  delete nft_contract_paid_map[deployed_contract_owner];
+  addToList deployed_contract_address;
+  
+  e = {_eventname: "deploymentRequestSuccess"; deployed_address : deployed_contract_address};
+  event e
+end
+
+
+
+
+(*                                Owner Transitions                                   *)
+
+
+
+(* @dev : owner *)
+(* @dev : owner can remove a deployed contract  *)
+transition ownerRemoveDeployedContract(deployed_contract_address: ByStr20)
+  isContractOwner;
+  
+  removeFromList deployed_contract_address
+end
+
+
+
+(* @dev : owner *)
+(* @dev : change the cost for deployment *)
+transition changeDeployCost(new_deploy_cost_holder: Uint128, new_deploy_cost_non_holder: Uint128)
+  isContractOwner;
+  
+  deploy_cost_holder     := new_deploy_cost_holder;
+  deploy_cost_non_holder := new_deploy_cost_non_holder
+end
+
+(* @dev : owner *)
+(* @dev : collect funds *)
+transition ownerCollect ()
+  isContractOwner;
+  
+  returnFunds
+end
+
+(* @dev : owner *)
+(* @dev : testing *)
+transition reconfigure (new_non_fungible_duck_address: ByStr20, new_current_duck_backend_address: ByStr20)
+  isContractOwner;
+  
+  current_non_fungible_duck_address := new_non_fungible_duck_address;
+  current_duck_backend_address := new_current_duck_backend_address
+end
+
+
+(* @dev : owner *)
+(* @dev : call on old contract, will call the new  *)
+transition ProxyMigrate(new_contract: ByStr20)
+  msg_to_new_contract = { 
+    _tag: "Migrate"; 
+    _recipient: new_contract;
+    _amount: u128_zero;
+    old_contract: _this_address 
+  };
+  msgs = one_msg msg_to_new_contract;
+  send msgs
+end
+
+(* @dev : called by the new, use the old state and map it into the new   *)
+transition Migrate (
+  old_contract: ByStr20 with contract 
+    field user_deployed_contracts: List ByStr20
+  end
+)
+  copy_user_deployed_contracts <- & old_contract.user_deployed_contracts;
+  user_deployed_contracts := copy_user_deployed_contracts
+end
