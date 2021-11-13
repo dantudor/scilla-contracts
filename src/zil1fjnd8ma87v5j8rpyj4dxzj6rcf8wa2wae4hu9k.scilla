@@ -1,0 +1,181 @@
+scilla_version 0
+
+import ListUtils IntUtils BoolUtils
+
+library WalletLib
+
+let zero = Uint32 0
+let zeroUint128 = Uint128 0
+let zil_prefix = "zil"
+let tzil_prefix = "tzil"
+let emptyOwner = 0x000000000000000000000000000000000000000000000000000000000000000000
+let emptyAddr = 0x0000000000000000000000000000000000000000
+let zero_uint128 = Uint128 0
+
+(*txId, token, to, amount, needSignData*)
+type Transaction =
+| Trans of String ByStr20 ByStr20 Uint128 ByStr
+
+let mk_verified_tx_map =
+  fun (owners : List ByStr33) =>
+  fun (tx : Transaction) =>
+    let init = Emp ByStr33 Transaction in
+    let iter =
+      fun (acc : Map ByStr33 Transaction) =>
+      fun (cur_owner : ByStr33) =>
+        (* Add owner unconditionally. We check for duplicates later *)
+        builtin put acc cur_owner tx
+        in
+    let folder = @list_foldl ByStr33 (Map ByStr33 Transaction) in
+    folder iter init owners
+
+let genNeedSignData =
+    fun (txId: String) =>
+    fun (token: String) =>
+    fun (b58Addr: String) =>
+    fun (qaAmount: String) =>
+        let originalData = builtin concat txId token in
+        let originalData = builtin concat originalData b58Addr in
+        let originalData = builtin concat originalData qaAmount in
+        (*use originalData hash as signing data*)
+        builtin sha256hash originalData
+
+(* Wrap single message into singleton list *)
+let one_msg =
+    fun (msg : Message) =>
+    let nil_msg = Nil {Message} in
+    Cons {Message} msg nil_msg
+
+(* Create native transaction message as singleton list *)
+let native_transaction_msg_as_list =
+    fun (recipient : ByStr20) =>
+    fun (amount : Uint128) =>
+    let msg = {_tag : "AddFunds"; _recipient : recipient; _amount : amount } in
+    one_msg msg
+
+(* Create zrc20 transfer transaction message as singleton list *)
+let zrc20_transaction_msg_as_list =
+    fun (recipient : ByStr20) =>
+    fun (to : ByStr20) =>
+    fun (amount : Uint128) =>
+    let msg = {_tag : "Transfer"; _recipient : recipient; _amount : zeroUint128; to: to; amount: amount} in
+    one_msg msg
+
+contract MultiSigWallet
+(owners: List ByStr33,
+threshold: Uint32)
+
+with
+    let len = @list_length ByStr33 in
+    let zero = Uint32 0 in
+    let fifty = Uint32 50 in
+    let ownersNum = len owners in
+    let ownersEnough = builtin lt zero ownersNum in
+    let ownersNoMany = builtin lt ownersNum fifty in
+    let ownersNumVerified = andb ownersEnough ownersNoMany in
+    let thresholdVerified = builtin lt threshold ownersNum in
+    andb ownersNumVerified thresholdVerified
+=>
+
+field records: Map String (Map ByStr33 Transaction) = Emp String (Map ByStr33 Transaction)
+field tokenArg: ByStr20 = emptyAddr
+field addrArg: ByStr20 = emptyAddr
+field amountArg: Uint128 = Uint128 0
+
+
+transition AddFunds()
+    evt = { _eventname : "Deposit" ; from : _sender; amount: _amount };
+    event evt;
+    accept
+end
+
+transition RecipientAcceptTransfer(sender : ByStr20, recipient: ByStr20, amount: Uint128)
+end
+
+transition TransferSuccessCallBack(sender : ByStr20, recipient: ByStr20, amount: Uint128)
+end
+
+transition withdraw( txId: String, tokenContract: String, to: String, amount: String, signatures: List ByStr64)
+    zil_prefix = "zil";
+    address = builtin bech32_to_bystr20 zil_prefix to;
+    match address with
+    | Some a =>
+      addrArg := a
+    | None =>
+      e = { _exception : "AddressInvalid"; txId: txId; token: tokenContract; to: to; amount: amount };
+      throw e
+    end;
+    tokenContractAddr = builtin bech32_to_bystr20 zil_prefix tokenContract;
+    match tokenContractAddr with
+    | Some a =>
+        tokenArg := a
+    | None =>
+        e = { _exception : "AddressInvalid"; txId: txId; token: tokenContract; to: to; amount: amount };
+        throw e
+    end;
+    number = builtin to_uint128 amount;
+    match number with
+    | Some n=>
+        amountArg := n
+    | None =>
+        e = { _exception : "AmountInvalid"; txId: txId; token: tokenContract; to: to; amount: amount };
+        throw e
+    end;
+    destination <- records[txId];
+    match destination with
+    | Some v =>
+        tx = builtin get v emptyOwner;
+        match tx with
+        | Some t =>
+        | None =>
+        end;
+        e = { _exception : "TxIdExisted"; txId: txId; token: tokenContract; to: to; amount: amount };
+        throw e
+    | None =>
+        data = genNeedSignData txId tokenContract to amount;
+        needSignData_bystr = builtin to_bystr data;
+        f =
+            fun (owner: ByStr33) =>
+                let check =
+                    fun (signature: ByStr64) =>
+                        builtin schnorr_verify owner needSignData_bystr signature
+                in
+                let verifySig = @list_filter ByStr64 in
+                let passedSigs = verifySig check signatures in
+                let len = @list_length ByStr64 in
+                let passedNum = len passedSigs in
+                builtin lt zero passedNum
+                ;
+        checkOwnerSig = @list_filter ByStr33;
+        verifiedOwners = checkOwnerSig f owners;
+        listLen = @list_length ByStr33;
+        len = listLen verifiedOwners;
+        token <- tokenArg;
+        addr <- addrArg;
+        num <- amountArg;
+        tx = Trans txId token addr num needSignData_bystr;
+        verifiedTxMap = mk_verified_tx_map verifiedOwners tx;
+        records[txId] := verifiedTxMap;
+        signersNum = builtin size verifiedTxMap;
+        temp = builtin lt signersNum threshold;
+        confirmed = negb temp;
+        match confirmed with
+        | True =>
+            isZIL = builtin eq token emptyAddr;
+            msgs =
+                match isZIL with
+                | True =>
+                    native_transaction_msg_as_list addr num
+                | False =>
+                    zrc20_transaction_msg_as_list token addr num
+                end;
+            evt = { _eventname : "WithdrawSuccess" ; to : to; amount: amount };
+            event evt;
+            send msgs
+        | False =>
+            e = { _exception : "SignersNotEnough"; txId: txId; token: tokenContract; to: to; amount: amount;
+            signersNum: signersNum};
+            throw e
+        end
+    end
+end

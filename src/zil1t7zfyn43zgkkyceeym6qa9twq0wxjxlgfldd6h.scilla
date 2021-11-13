@@ -1,0 +1,136 @@
+scilla_version 0
+
+import ListUtils
+
+(***************************************************)
+(*               Scan Contract                     *)
+(***************************************************)
+
+library ScanContract
+
+let zero = Uint128 0
+
+(* helper methods *)
+let one_msg = 
+  fun (msg : Message) => 
+  let nil_msg = Nil {Message} in
+  Cons {Message} msg nil_msg
+
+(* Error codes *)
+type Error =
+| CodeNotOwner
+| CodeScanAlreadyRecorded
+
+let make_error =
+  fun (result: Error) =>
+    let result_code = 
+      match result with
+      | CodeNotOwner            => Int32 -1
+      | CodeScanAlreadyRecorded => Int32 -2
+      end
+    in
+    { _exception : "Error"; code : result_code }
+
+(***************************************************)
+(*             The contract definition             *)
+(***************************************************)
+
+contract ScanContract
+(
+init_owner: ByStr20
+)
+
+field admin : ByStr20 = init_owner
+field pending_owner : Option ByStr20 = None {ByStr20}
+
+field last_scan_id: Uint32 = Uint32 0        
+(* scans : uid:id:metadata *)
+field scans : Map String (Map Uint32 String) = Emp String (Map Uint32 String)    
+
+(* users ledger; uid:address *)
+field users : Map String ByStr20 = Emp String ByStr20 
+
+(**************************************)
+(*             Procedures             *)
+(**************************************)
+
+procedure ThrowError(err: Error)
+  e = make_error err;
+  throw e
+end
+
+procedure IsAdmin()
+  current_admin <- admin;
+  is_owner = builtin eq current_admin _sender;
+  match is_owner with
+  | True =>
+  | False =>
+    err = CodeNotOwner;
+    ThrowError err
+  end
+end
+
+(***************************************)
+(*             Transitions             *)
+(***************************************)
+
+(* RecordScan transition *)
+(* Params: uid of user (String), id of the scan (Uint32), metadata of scan serialized (String) *)
+transition RecordScan(uid: String, id: Uint32, metadata: String)
+  IsAdmin;
+
+  ls_id <- last_scan_id;
+  new_scan_id = let one = Uint32 1 in builtin add ls_id one;
+  last_scan_id := new_scan_id;
+
+  scan <- scans[uid][id];
+  match scan with
+  | None => 
+    scans[uid][id] := metadata;
+    wid <- users[uid];
+
+    msg_to_sender = {_tag : "RecordScanCallBack"; _recipient : _sender; _amount : zero; 
+                uid : uid; id : id; wid : wid};
+    msgs = one_msg msg_to_sender;
+    send msgs
+  | Some val => 
+    err = CodeScanAlreadyRecorded;
+    ThrowError err
+  end
+end
+
+(* RecordUser transition *)
+(* Params: store a new user as their uid (String) & wallet of user (ByStr20) *)
+transition RecordUser(uid: String, recipient: ByStr20)
+  IsAdmin;
+
+  users[uid] := recipient;
+
+  e = {_eventname : "RecordUserSuccess"; sender : _sender; uid : uid; recipient : recipient};
+  event e 
+end
+
+(* RequestOwnershipTransfer transition *)
+(* Params: address of new owner (ByStr20) *)
+transition RequestOwnershipTransfer(newOwner : ByStr20)
+  IsAdmin;
+  po = Some {ByStr20} newOwner;
+  pending_owner := po
+end
+
+transition ConfirmOwnershipTransfer ()
+  optional_po <- pending_owner;
+  match optional_po with
+  | Some pend_owner =>
+      caller_is_new_owner = builtin eq _sender pend_owner;
+      match caller_is_new_owner with
+      | True =>
+          (* transfer ownership *)
+          admin := pend_owner;
+          none = None {ByStr20};
+          pending_owner := none
+      | False => (* the caller is not the new owner, do nothing *)
+      end
+  | None => (* ownership transfer is not in-progress, do nothing *)
+  end
+end

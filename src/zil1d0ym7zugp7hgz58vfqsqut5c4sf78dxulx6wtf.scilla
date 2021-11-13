@@ -1,0 +1,400 @@
+scilla_version 0
+
+(* Proxy contract to abstract business logic smart contracts *)
+
+import BoolUtils IntUtils
+
+library ProxyContract
+
+let zero = Uint128 0
+let one = Uint128 1
+let false = False
+let true = True
+
+(* returns singleton List Message *)
+let one_msg =
+    fun (msg : Message) =>
+        let nil_msg = Nil {Message} in
+        Cons {Message} msg nil_msg
+
+(* Error codes *)
+type Error =
+| CodeNotOwner
+| CodeNotScanContract
+| CodeNotFungibleContract
+| CodeNotWallet
+| CodeNoUserWallet
+| CodeAlreadyCredited
+| CodeNoAccess
+
+let make_error =
+  fun (result: Error) =>
+    let result_code = 
+      match result with
+      | CodeNotOwner              => Int32 -1
+      | CodeNotScanContract       => Int32 -2
+      | CodeNotFungibleContract   => Int32 -3 
+      | CodeNotWallet             => Int32 -4
+      | CodeNoUserWallet          => Int32 -5
+      | CodeAlreadyCredited       => Int32 -6
+      | CodeNoAccess              => Int32 -7
+      end
+    in
+    { _exception : "Error"; code : result_code }
+
+(***************************************************)
+(*             The contract definition             *)
+(***************************************************)
+
+contract ProxyContract
+(
+init_implementation: ByStr20,
+init_fung_implementation: ByStr20,
+init_wallet: ByStr20,
+init_owner: ByStr20
+)
+
+field implementation : ByStr20 = init_implementation
+field fung_implementation : ByStr20 = init_fung_implementation
+field wallet : ByStr20 = init_wallet
+field admin : ByStr20 = init_owner
+field pending_owner : Option ByStr20 = None {ByStr20}
+
+field balances : Map ByStr20 Uint128 = Emp ByStr20 Uint128
+field totalSupply : Uint128 = zero
+field creditAmount : Uint128 = Uint128 10000
+
+(* scans ledger; uid:id:credited *)
+field scans : Map String (Map Uint32 Bool) = Emp String (Map Uint32 Bool)
+
+
+(**************************************)
+(*             Procedures             *)
+(**************************************)
+
+procedure ThrowError(err: Error)
+  e = make_error err;
+  throw e
+end
+
+procedure IsAdmin()
+  current_admin <- admin;
+  is_owner = builtin eq current_admin _sender;
+  match is_owner with
+  | True =>
+  | False =>
+    err = CodeNotOwner;
+    ThrowError err
+  end
+end
+
+procedure IsWallet()
+  current_wallet <- wallet;
+  is_wallet = builtin eq current_wallet _sender;
+  match is_wallet with
+  | True =>
+  | False =>
+    err = CodeNotWallet;
+    ThrowError err
+  end
+end
+
+procedure IsScanContract()
+  impl <- implementation;
+  is_scan = builtin eq impl _sender;
+  match is_scan with
+  | True =>
+  | False =>
+    err = CodeNotScanContract;
+    ThrowError err
+  end
+end
+
+procedure IsFungibleContract()
+  impl <- fung_implementation;
+  is_fung = builtin eq impl _sender;
+  match is_fung with
+  | True =>
+  | False =>
+    err = CodeNotFungibleContract;
+    ThrowError err
+  end
+end
+
+procedure Credit(uid: String, id: Uint32, recipient: ByStr20)
+  fung_impl <- fung_implementation;
+  amt <- creditAmount;
+  
+  value <- scans[uid][id];
+  match value with
+  | None =>
+    err = CodeNoAccess;
+    ThrowError err
+  | Some val =>
+    match val with
+    | False =>
+      (* not credited yet *)  
+      msg = {_tag : "Transfer"; _recipient : fung_impl; _amount : zero; to : recipient; amount : amt};
+      msgs = one_msg msg;
+      send msgs;
+
+      scans[uid][id] := true;
+      e = {_eventname : "CreditSuccess"; uid : uid; id : id; sender : _sender};
+      event e
+    | True =>
+      err = CodeAlreadyCredited;
+      ThrowError err
+    end
+  end
+end
+
+(***************************************)
+(*             Transitions             *)
+(***************************************)
+
+(* RequestOwnershipTransfer transition *)
+(* Params: address of new owner (ByStr20) *)
+transition RequestOwnershipTransfer(newOwner : ByStr20)
+  IsWallet;
+  po = Some {ByStr20} newOwner;
+  pending_owner := po
+end
+
+transition ConfirmOwnershipTransfer ()
+  optional_po <- pending_owner;
+  match optional_po with
+  | Some pend_owner =>
+      caller_is_new_owner = builtin eq _sender pend_owner;
+      match caller_is_new_owner with
+      | True =>
+          (* transfer ownership *)
+          admin := pend_owner;
+          none = None {ByStr20};
+          pending_owner := none
+      | False => (* the caller is not the new owner, do nothing *)
+      end
+  | None => (* ownership transfer is not in-progress, do nothing *)
+  end
+end
+
+(* Proxy RequestOwnershipTransfer *)
+transition ProxyRequestOwnershipTransfer(impl: ByStr20, newOwner: ByStr20) 
+  IsWallet;
+
+  msg = {_tag : "RequestOwnershipTransfer"; _recipient : impl; _amount : zero; newOwner : newOwner};
+  msgs = one_msg msg;
+  send msgs
+end
+
+transition ProxyConfirmOwnershipTransfer(impl: ByStr20) 
+  IsWallet;
+
+  msg = {_tag : "ConfirmOwnershipTransfer"; _recipient : impl; _amount : zero};
+  msgs = one_msg msg;
+  send msgs
+end
+
+(* Legacy ProxyTransferOwnership *)
+transition ProxyTransferOwnership(impl: ByStr20, newOwner: ByStr20) 
+  IsWallet;
+
+  msg = {_tag : "TransferOwnership"; _recipient : impl; _amount : zero; newOwner : newOwner};
+  msgs = one_msg msg;
+  send msgs
+end
+
+(* Set Credit Amount *)
+transition SetCreditAmount(amount: Uint128)
+  IsWallet;
+  
+  creditAmount := amount;
+
+  e = {_eventname : "SetCreditAmountSuccess"; amount : amount};
+  event e
+end
+
+(* Upgrade proxy implimentations, or wallet *)
+transition UpgradeImplimentationTo(newImplementation: ByStr20)
+  IsAdmin;
+  
+  implementation := newImplementation;
+
+  e = {_eventname : "UpgradedToSuccess"; newImplementation : newImplementation};
+  event e
+end
+
+transition UpgradeFungibleImplimentationTo(newImplementation: ByStr20)
+  IsAdmin;
+  
+  fung_implementation := newImplementation;
+
+  e = {_eventname : "UpgradedFungibleToSuccess"; newImplementation : newImplementation};
+  event e
+end
+
+transition UpgradeWalletOwner(newOwner: ByStr20)
+  IsWallet;
+  
+  wallet := newOwner;
+
+  e = {_eventname : "UpgradedWalletSuccess"; newOwner : newOwner};
+  event e
+end
+
+(* smart contract transitions around business logic *)
+transition ProxyRecordScan(uid: String, id: Uint32, metadata: String)
+  IsAdmin;
+  impl <- implementation;
+
+  msg = {_tag : "RecordScan"; _recipient : impl; _amount : zero; uid : uid; 
+    id : id; metadata : metadata};
+  msgs = one_msg msg;
+  send msgs
+end
+
+transition RecordScanCallBack(uid: String, id: Uint32, wid: Option ByStr20)
+  IsScanContract;
+
+  scans[uid][id] := false;
+
+  match wid with
+  | None => (* no wallet; deferred crediting *)
+  | Some val =>
+    (* credit *)
+    Credit uid id val
+  end;
+
+  credited <- scans[uid][id];
+  e = {_eventname : "RecordScanSuccess"; sender : _sender; credited : credited};
+  event e
+end
+
+transition ProxyCredit(uid: String, id: Uint32, recipient: ByStr20)
+  IsAdmin;
+
+  Credit uid id recipient
+end 
+
+
+transition ProxyRecordUser(uid: String, recipient: ByStr20)
+  IsAdmin;
+  impl <- implementation;
+
+  msg = {_tag : "RecordUser"; _recipient : impl; _amount : zero; uid : uid; 
+    recipient : recipient};
+  msgs = one_msg msg;
+  send msgs 
+end
+
+(* Fungible transitions *)
+transition ProxyMint(recipient: ByStr20, amount : Uint128)
+  IsWallet;
+  fung_impl <- fung_implementation;
+
+  current_supply <- totalSupply;
+  get_to_bal <- balances[recipient];
+  to_bal =
+      match get_to_bal with
+      | Some bal => bal
+      | None => zero
+      end;
+  msg = {_tag : "Mint"; _recipient : fung_impl; _amount : zero; recipient : recipient; amount : amount};
+  msgs = one_msg msg;
+  send msgs
+end
+
+transition MintSuccessCallBack(minter: ByStr20, recipient: Uint128, amount : Uint128)
+end
+
+transition ProxyBurn(burn_account: ByStr20, amount: Uint128)
+  IsWallet;
+  fung_impl <- fung_implementation;
+
+  current_supply <- totalSupply;
+  get_to_bal <- balances[burn_account];
+  to_bal =
+      match get_to_bal with
+      | Some bal => bal
+      | None => zero
+      end;
+  msg = {_tag : "Burn"; _recipient : fung_impl; _amount : zero; burn_account : burn_account; amount : amount};
+  msgs = one_msg msg;
+  send msgs
+end
+
+transition BurnSuccessCallBack(burner: ByStr20, burn_account: ByStr20, amount : Uint128)
+end
+
+transition ProxyTransfer(to: ByStr20, amount: Uint128) 
+  fung_impl <- fung_implementation;
+  
+  msg = {_tag : "Transfer"; _recipient : fung_impl; _amount : zero; to : to; amount : amount};
+  msgs = one_msg msg;
+  send msgs
+end
+
+transition TransferSuccessCallBack(sender: ByStr20, recipient: ByStr20, amount: Uint128)
+  IsFungibleContract;
+
+  bal <- balances[recipient];
+  match bal with
+  | None => 
+    balances[recipient] := amount
+  | Some val => 
+    new_bal = builtin add val amount;
+    balances[recipient] := new_bal
+  end;
+  
+  e = {_eventname : "TransferSuccess"; sender : _sender};
+  event e 
+end
+
+transition ProxyTransferFrom(from: ByStr20, to: ByStr20, amount: Uint128) 
+  fung_impl <- fung_implementation;
+
+  msg = {_tag : "TransferFrom"; _recipient : fung_impl; _amount : zero; from : from; to : to; amount : amount};
+  msgs = one_msg msg;
+  send msgs
+end
+
+transition TransferFromSuccessCallBack(initiator: ByStr20, sender: ByStr20, recipient: ByStr20, amount: Uint128)
+  IsFungibleContract;
+    
+  bal <- balances[recipient];
+  match bal with
+  | None => 
+    balances[recipient] := amount
+  | Some val => 
+    new_bal = builtin add val amount;
+    balances[recipient] := new_bal
+  end;
+    
+  e = {_eventname : "TransferFromSuccess"; sender : _sender};
+  event e 
+end
+
+transition ProxyIncreaseAllowance(spender: ByStr20, amount: Uint128) 
+  fung_impl <- fung_implementation;
+  
+  msg = {_tag : "IncreaseAllowance"; _recipient : fung_impl; _amount : zero; spender : spender; amount : amount};
+  msgs = one_msg msg;
+  send msgs
+end
+
+(* required as per token transfers *)
+transition RecipientAcceptTransfer(sender: ByStr20, recipient: ByStr20, amount: Uint128)
+end 
+
+transition RecipientAcceptTransferFrom(initiator: ByStr20, sender : ByStr20, recipient: ByStr20, amount: Uint128)
+end 
+
+transition RecipientAcceptMint(minter: ByStr20, recipient: ByStr20, amount: Uint128)
+end 
+
+transition RecipientAcceptBurn(burner: ByStr20, burn_account: ByStr20, amount: Uint128)
+end 
+
+(* Add native funds to wallet *)
+transition AddFunds ()
+  accept
+end
