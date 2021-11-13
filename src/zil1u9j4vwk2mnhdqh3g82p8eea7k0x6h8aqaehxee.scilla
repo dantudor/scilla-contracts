@@ -1,0 +1,206 @@
+scilla_version 0
+
+
+import NatUtils ListUtils BoolUtils PairUtils
+
+library BlackholeLibrary
+
+                        (* recipient, pi_a,          pi_b_1,      pi_b_2,          pi_b_3,         pi_c,        publicSignals,  fee, wallet*)
+type Todo = | Withdraw of ByStr20 (List Uint256) (List Uint256) (List Uint256) (List Uint256)  (List Uint256) (List Uint256) Uint128 ByStr20
+
+type Error =
+        | NULLIFIER_ERROR
+        | NOT_WHITELISTED_TOKEN_ERROR
+        | UNKNOWN_PROXY_ERROR
+        | COMMIT_ERROR
+
+let getErrorValue =
+    fun(error: Error) =>
+        match error with
+            | NULLIFIER_ERROR => Int32 -1
+            | NOT_WHITELISTED_TOKEN_ERROR => Int32 -2
+            | UNKNOWN_PROXY_ERROR => Int32 -3
+            | COMMIT_ERROR => Int32 -4
+        end
+
+let one_msg =
+    fun (msg: Message) =>
+    let nil_msg = Nil {Message} in
+    Cons {Message} msg nil_msg
+
+let two_msgs =
+    fun (msg1 : Message) =>
+    fun (msg2 : Message) =>
+    let msgs_tmp = one_msg msg2 in
+    Cons {Message} msg1 msgs_tmp
+
+let is_account_exists_in =
+    fun(account: ByStr20) =>
+    fun(accounts: List ByStr20) =>
+        let mem = @list_exists ByStr20 in
+        let f = fun(a: ByStr20) =>  builtin eq a account in
+        mem f accounts
+
+
+
+let calculate_mint_amount =
+    fun(amount: Uint128) =>
+    fun(emission_rate: Uint128) =>
+    fun(decimals: Uint128) =>
+        let div_amount = builtin div amount emission_rate in
+        builtin mul div_amount decimals
+
+let unknown_address = 0x0000000000000000000000000000000000000000
+
+let tree_height: Uint32 = Uint32 125
+
+let true = True
+let false = False
+let fst_null = @fst Uint256 Bool
+let snd_null = @snd Uint256 Bool
+
+contract ZRC2Blackhole(
+    contract_owner: ByStr20,
+    blackhole_proxy: ByStr20,
+    token_address: ByStr20,
+    contract_amount: Uint128
+)
+
+
+field tree: Map Uint256 (List Uint256) = Emp Uint256 (List Uint256)
+field index: Uint256 = Uint256 0
+field nullifiers: Map Uint256 Bool = Emp Uint256 Bool
+field commitments: Map Uint256 Bool = Emp Uint256 Bool
+
+field withdraw: Map Uint256 Todo = Emp Uint256 Todo
+
+
+procedure Continue()
+end
+
+procedure ThrowError(error: Error)
+  code = getErrorValue error;
+  e = {_exception: "Error"; code: code};
+  throw e
+end
+
+
+procedure IsProxy()
+    is_eq = builtin eq _sender blackhole_proxy;
+    match is_eq with
+        | True => Continue
+        | False =>
+            code = UNKNOWN_PROXY_ERROR;
+            ThrowError code
+    end
+end
+
+procedure IsNotNullifier(nullifier: Uint256)
+    op_nullifier <- nullifiers[nullifier];
+    match op_nullifier with
+        | Some _ =>
+            code = NULLIFIER_ERROR;
+            ThrowError code
+        | None => Continue
+    end
+end
+
+
+
+procedure CheckNullifier(pair: Pair Uint256 Bool)
+    nullifier = fst_null pair;
+    is_verified = snd_null pair;
+    match is_verified with
+        | True =>
+            op_withdraw <- withdraw[nullifier];
+            delete withdraw[nullifier];
+            match op_withdraw with
+                | Some value =>
+                    match value with
+                        | Withdraw recipient _ _ _ _ _ _ fee wallet =>
+
+                            m = builtin mul fee contract_amount;
+                            ten = Uint128 10000;
+                            cut = builtin div m ten;
+
+                            cut_amount = builtin sub contract_amount cut;
+                            withdraw_msg = {_tag: "Transfer"; _recipient: token_address;  _amount: Uint128 0; to: recipient; amount: cut_amount};
+                            wallet_msg = {_tag: "Transfer"; _recipient: token_address;  _amount: Uint128 0; to: wallet; amount: cut};
+
+                            nullifiers[nullifier] := true;
+
+                            msgs = two_msgs withdraw_msg wallet_msg;
+                            send msgs
+                    end
+                | None =>
+            end
+        | False => delete withdraw[nullifier]
+    end
+end
+
+procedure IsNotCommitInclude(commit: Uint256)
+    op_commit <- commitments[commit];
+    match op_commit with
+        | Some _ =>
+            code = COMMIT_ERROR;
+            ThrowError code
+        | None => Continue
+    end
+end
+
+
+procedure AddCommit(commit: Uint256)
+    size = @list_length Uint256;
+    i <- index;
+    op_commitments <- tree[i];
+    all_commitments = match op_commitments with | Some c => c | None => Nil {Uint256} end;
+    n = size all_commitments;
+    is_max = builtin eq n tree_height;
+    match is_max with
+        | True =>
+            one_uint256 = Uint256 1;
+            new_index = builtin add i one_uint256;
+            index := new_index;
+            nil = Nil {Uint256};
+            new_list = Cons {Uint256} commit nil;
+            tree[new_index] := new_list;
+            commitments[commit] := true
+        | False =>
+            new_list = Cons {Uint256} commit all_commitments;
+            tree[i] := new_list;
+            commitments[commit] := true
+    end
+end
+
+
+transition Deposit(commit: Uint256)
+    IsProxy;
+    IsNotCommitInclude commit;
+    AddCommit commit
+end
+
+transition Withdraw(nullifier: Uint256, recipient: ByStr20, pi_a: List Uint256, pi_b_1: List Uint256, pi_b_2: List Uint256, pi_b_3: List Uint256, pi_c: List Uint256, publicSignals: List Uint256, fee: Uint128, wallet: ByStr20)
+    IsProxy;
+    IsNotNullifier nullifier;
+    nullifiers[nullifier] := false;
+    to_withdraw = Withdraw recipient pi_a pi_b_1 pi_b_2 pi_b_3 pi_c publicSignals fee wallet;
+    withdraw[nullifier] := to_withdraw
+end
+
+transition VerifyProof(proof: Pair Uint256 Bool)
+    IsProxy;
+    CheckNullifier proof
+end
+
+
+transition RecipientAcceptTransferFrom(initiator : ByStr20, sender : ByStr20, recipient : ByStr20, amount : Uint128)
+end
+    
+transition RecipientAcceptTransfer(sender : ByStr20, recipient : ByStr20, amount : Uint128)
+end
+  
+transition TransferSuccessCallBack(sender : ByStr20, recipient : ByStr20, amount : Uint128)
+end
+  
+transition TransferFromSuccessCallBack (initiator : ByStr20, sender : ByStr20, recipient : ByStr20, amount : Uint128)
+end

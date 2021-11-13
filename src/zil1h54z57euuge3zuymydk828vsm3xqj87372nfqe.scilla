@@ -1,0 +1,114 @@
+(* ZWallRewardConfig *)
+
+(***************************************************)
+(*                 Scilla version                  *)
+(***************************************************)
+
+scilla_version 0
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+library ZWallRewardConfig
+
+let one_msg =
+  fun (msg: Message) =>
+  let nil_msg = Nil {Message} in
+  Cons {Message} msg nil_msg
+  
+(* Error exception *)
+type Error =
+  | CodeNotContractOwner
+  
+let make_error =
+fun (result : Error) =>
+  let result_code = 
+    match result with
+    | CodeNotContractOwner  => Int32 -1
+    end
+  in
+  { _exception : "ZWallRewardConfigError"; code : result_code }
+  
+contract ZWallRewardConfig
+(
+  owner : ByStr20,
+  wall_contract_initial : ByStr20,
+  zpaint_percent_initial: Uint128,
+  zwall_percent_initial: Uint128,
+  zpaint_extra_initial: Uint128,
+  zwall_extra_initial: Uint128
+)
+
+field wall_contract: ByStr20 = wall_contract_initial
+(*Percent decimals are 4*)
+field zpaint_percent: Uint128 = zpaint_percent_initial
+field zwall_percent: Uint128 = zwall_percent_initial
+
+field zpaint_extra: Uint128 = zpaint_extra_initial
+field zwall_extra: Uint128 = zwall_extra_initial
+
+(* Emit Errors *)
+procedure ThrowError(err : Error)
+  e = make_error err;
+  throw e
+end
+
+procedure ThrowNotSenderIsOwner()
+  is_owner = builtin eq _sender owner;
+  match is_owner with
+  | True =>
+  | False =>
+    err = CodeNotContractOwner;
+    ThrowError err
+  end
+end
+
+transition UpdateWallContract(value: ByStr20)
+  ThrowNotSenderIsOwner;
+  wall_contract := value;
+  e = { _eventname: "UpdateWallContract"; 
+    value: value};
+  event e
+end
+
+transition UpdateZpaintPercent(value: Uint128)
+  ThrowNotSenderIsOwner;
+  zpaint_percent := value;
+  e = { _eventname: "UpdateZpaintPercent"; 
+    value: value};
+  event e
+end
+
+transition UpdateZwallPercent(value: Uint128)
+  ThrowNotSenderIsOwner;
+  zwall_percent := value;
+  e = { _eventname: "UpdateZwallPercent"; 
+    value: value};
+  event e
+end
+
+transition UpdatePercent(zpaint: Uint128, zwall: Uint128)
+  ThrowNotSenderIsOwner;
+  zpaint_percent := zpaint;
+  zwall_percent := zwall;
+  e = { _eventname: "UpdatePercent"; 
+    zpaint: zpaint; zwall:zwall};
+  event e
+end
+
+transition UpdateZpaintExtra(value: Uint128)
+  ThrowNotSenderIsOwner;
+  zpaint_extra := value;
+  e = { _eventname: "UpdateZpaintExtra"; 
+    value: value};
+  event e
+end
+
+transition UpdateZwallExtra(value: Uint128)
+  ThrowNotSenderIsOwner;
+  zwall_extra := value;
+  e = { _eventname: "UpdateZwallExtra"; 
+    value: value};
+  event e
+end
+

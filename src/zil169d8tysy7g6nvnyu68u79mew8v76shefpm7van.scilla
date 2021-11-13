@@ -1,0 +1,276 @@
+
+scilla_version 0
+
+
+import PairUtils
+
+library CookieJar
+type Error =
+| NotAuthorized
+| NoStake
+| IsPaused
+
+let make_error =
+fun (result: Error) =>
+let result_code =
+match result with
+| NotAuthorized => Int32 -1
+| NoStake => Int32 -2
+| IsPaused => Int32 -3
+end
+in
+{ _exception: "Error"; code: result_code }
+
+let ssn_proxy = "ssn_proxy_v1"
+
+let zero = Uint128 0
+let zeroByStr20 = 0x0000000000000000000000000000000000000000
+let option_value = tfun 'A => fun( default: 'A ) => fun( input: Option 'A) =>
+  match input with
+  | Some v => v
+  | None => default end
+let option_uint128_value = let f = @option_value Uint128 in f zero
+let option_bystr20_value = let f = @option_value ByStr20 in f zeroByStr20
+let commission_denominator = Uint128 10000
+
+type Uint128Pair =
+| Uint128Pair of Uint128 Uint128
+let uint128_to_uint256 : Uint128 -> Uint256 =
+  fun (x : Uint128) =>
+    let ox256 = builtin to_uint256 x in
+      match ox256 with
+      | None =>
+        
+        let zero = Uint256 0 in
+        builtin div zero zero
+      | Some x256 => x256
+      end
+
+let muldiv : Uint128 -> Uint128 -> Uint128 -> Uint128 =
+    fun (x : Uint128) =>
+    fun (y : Uint128) =>
+    fun (z : Uint128) =>
+      let x256 = uint128_to_uint256 x in
+      let y256 = uint128_to_uint256 y in
+      let z256 = uint128_to_uint256 z in
+      let x_mul_y256 = builtin mul x256 y256 in
+      let res256 = builtin div x_mul_y256 z256 in
+      let ores128 = builtin to_uint128 res256 in
+      match ores128 with
+      | None =>
+        
+        let max_uint128 = Uint128 340282366920938463463374607431768211455 in
+        let fourtytwo128 = Uint128 42 in
+        builtin mul max_uint128 fourtytwo128
+      | Some res128 =>
+        res128
+      end
+
+let sub_percentage_of_amt: Uint128 -> Uint128 -> Uint128Pair =
+    fun (amount: Uint128) => fun (commission_numerator: Uint128) =>
+    let commission = muldiv amount commission_numerator commission_denominator in
+    let amount_sub_commission = builtin sub amount commission in
+    let res = Uint128Pair amount_sub_commission commission in
+    res
+let one_msg = fun( msg: Message ) =>
+let nil_msg = Nil{ Message } in Cons{ Message } msg nil_msg
+
+let true = True
+let false = False
+
+let fee_tag = "CookieJar.SellStakeToCookieJar.fee"
+
+
+contract CookieJar(
+    init_admin: ByStr20,
+    init_config: ByStr20 with contract field config_bystr20: Map String ByStr20, field config_uint128: Map String Uint128 end,
+    init_ssn_list: ByStr20 with contract field deposit_amt_deleg: Map ByStr20 (Map ByStr20 Uint128) end,
+    init_reputation: ByStr20 with contract field address_to_discount: Map ByStr20 Uint128 end
+)
+
+field ssn_proxy_impl: ByStr20 = zeroByStr20
+field admin: ByStr20 = init_admin
+field staging_admin: Option ByStr20 = None {ByStr20}
+
+field temp_offered: Uint128 = zero
+field paused: Bool = false
+field temp_discount: Uint128 = zero
+field temp_fee: Uint128 = zero
+
+procedure ThrowError(err: Error)
+    e = make_error err;
+    throw e
+end
+
+procedure GetSsnProxy()
+    option_proxy <-& init_config.config_bystr20[ssn_proxy];
+    proxy = option_bystr20_value option_proxy;
+    ssn_proxy_impl := proxy
+end
+
+procedure SsnProxyRequestorMsg(tag: String, requestor: ByStr20)
+    GetSsnProxy; proxy <- ssn_proxy_impl;
+    msg = let m = { 
+        _tag: tag;
+        _recipient: proxy;
+        _amount: zero;
+        requestor: requestor
+    } in one_msg m;
+    send msg
+end
+procedure AssertIsAdmin(addr: ByStr20)
+    admin_temp <- admin;
+    is_admin = builtin eq admin_temp addr;
+    match is_admin with
+    | True =>
+    | False => e = NotAuthorized; ThrowError e
+    end
+end
+
+procedure IsAdmin()
+    AssertIsAdmin _sender
+end
+procedure SendZIL(addr: ByStr20, amt: Uint128)
+    msg = let m = { 
+        _tag: "AddFunds";
+        _recipient: addr;
+        _amount: amt
+    } in one_msg m;
+    send msg
+end
+procedure AssertStakeNotZero(amt: Uint128)
+    is_zero = builtin eq amt zero;
+    match is_zero with
+    | True => e = NoStake; ThrowError e
+    | False => 
+    end
+end
+procedure AddOfferedStake(ssn_address: ByStr20)
+    tmp <- temp_offered;
+    option_offered_stake <-& init_ssn_list.deposit_amt_deleg[_sender][ssn_address];
+    offered = option_uint128_value option_offered_stake;
+    added = builtin add offered tmp;
+    temp_offered := added
+end
+
+procedure UpdateDiscount()
+    option_discount <-& init_reputation.address_to_discount[_sender];
+    discount = option_uint128_value option_discount;
+    temp_discount := discount
+end
+
+procedure UpdateFee()
+    option_fee <-& init_config.config_uint128[fee_tag];
+    fee = option_uint128_value option_fee;
+    temp_fee := fee
+end
+procedure DoWithdrawStakeRewards(ssnaddr: ByStr20)
+    GetSsnProxy; proxy <- ssn_proxy_impl;
+    msg = let m = { 
+        _tag: "WithdrawStakeRewards";
+        _recipient: proxy;
+        _amount: zero;
+        ssnaddr: ssnaddr
+    } in one_msg m;
+    send msg
+end
+transition SetStagedAdmin(staged: ByStr20)
+    IsAdmin;
+    opt_staged = Some {ByStr20} staged;
+    staging_admin := opt_staged
+end
+transition WithdrawStakeRewards(ssnaddr: ByStr20)
+    IsAdmin;
+    DoWithdrawStakeRewards ssnaddr
+end
+transition Pause()
+    IsAdmin;
+    paused := true
+end
+transition UnPause()
+    IsAdmin;
+    paused := false
+end
+transition RequestDelegatorSwap(new_deleg_addr: ByStr20)
+    IsAdmin;
+    GetSsnProxy; proxy <- ssn_proxy_impl;
+    msg = let m = {
+        _tag: "RequestDelegatorSwap"; 
+        _recipient: proxy;
+        _amount: zero;
+        new_deleg_addr: new_deleg_addr
+    } in one_msg m;
+    send msg
+end
+transition RevokeDelegatorSwap()
+    IsAdmin;
+    GetSsnProxy; proxy <- ssn_proxy_impl;
+    msg = let m = {
+        _tag: "RevokeDelegatorSwap"; 
+        _recipient: proxy;
+        _amount: zero
+    } in one_msg m;
+    send msg
+end
+transition SendFunds(beneficiary: ByStr20, amt: Uint128)
+    IsAdmin;
+    SendZIL beneficiary amt
+end
+transition ReDelegateStake(ssnaddr: ByStr20, to_ssn: ByStr20, amount: Uint128)
+    IsAdmin;
+    GetSsnProxy; proxy <- ssn_proxy_impl;
+    msg = let m = {
+        _tag: "ReDelegateStake";
+        _recipient: proxy;
+        _amount: zero;
+        ssnaddr: ssnaddr;
+        to_ssn: to_ssn;
+        amount: amount
+    } in one_msg m;
+    send msg
+end
+procedure NotPaused()
+    is_paused <- paused;
+    match is_paused with
+    | True => e = IsPaused; ThrowError e
+    | False => 
+    end
+end
+transition ClaimStagedAdmin()
+    option_staged <- staging_admin;
+    staged = option_bystr20_value option_staged;
+    staged_is_sender = builtin eq _sender staged;
+    match staged_is_sender with
+    | False => e = NotAuthorized; ThrowError e
+    | True => admin := staged
+    end
+end
+
+transition SellStakeToCookieJar(seller_ssn_addressses: List ByStr20, cookie_ssn_addressses: List ByStr20)
+    NotPaused;
+    forall cookie_ssn_addressses DoWithdrawStakeRewards;
+    forall seller_ssn_addressses AddOfferedStake;
+    offered <- temp_offered;
+    temp_offered := zero;
+    AssertStakeNotZero offered;
+
+    
+    UpdateFee; UpdateDiscount;
+    percentage_fee <- temp_fee; discount <- temp_discount;
+
+    fee_discounted_and_discount_amt = sub_percentage_of_amt percentage_fee discount;
+    match fee_discounted_and_discount_amt with
+    | Uint128Pair fee_discounted discount_amt =>
+        to_give_and_to_keep = sub_percentage_of_amt offered fee_discounted;
+        match to_give_and_to_keep with
+        | Uint128Pair to_give to_keep =>
+            tag = "ConfirmDelegatorSwap";
+            SsnProxyRequestorMsg tag _sender;
+            SendZIL _sender to_give
+        end
+    end
+end
+
+transition AddFunds() accept end
+transition WithdrawStakeRewardsSuccessCallBack(ssnaddr: ByStr20, rewards: Uint128) end
+transition ReDelegateStakeSuccessCallBack(ssnaddr: ByStr20, tossn: ByStr20, amount: Uint128) end

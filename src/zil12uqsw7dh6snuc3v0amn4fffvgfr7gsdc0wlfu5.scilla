@@ -1,0 +1,67 @@
+scilla_version 0
+import IntUtils
+
+library StakingContract
+let zero: Uint128 = Uint128 0
+let percentage: Uint128 = Uint128 10
+let hundred: Uint128 = Uint128 100
+
+let one_msg = fun(msg: Message) =>
+    let nil_msg = Nil {Message} in
+    Cons {Message} msg nil_msg
+
+contract StakingContract()
+
+field user_amount: Map ByStr20 Uint128 = Emp ByStr20 Uint128
+
+transition DelegateStake(ssn_addr: ByStr20)
+    sender_balance <- user_amount[_sender];
+    accept;
+    match sender_balance with
+    |   None =>
+            user_amount[_sender] := _amount;
+            e = {
+                _eventname: "amount deposited";
+                amount: _amount;
+                sender: _sender
+            };
+            event e
+    |   Some amt =>
+            new_balance = builtin add amt _amount;
+            user_amount[_sender] := new_balance;
+            e = {
+                    _eventname: "amount deposited";
+                    amount: _amount;
+                    sender: _sender
+                };
+            event e
+    end
+end
+
+transition AddFund()
+  accept
+end
+transition WithDrawStakeReward(ssn_addr: ByStr20, round: Uint128)
+    is_round_zero = uint128_eq round zero;
+  
+    current_balance <- _balance;
+    current_reward_intermediate = builtin mul current_balance percentage;
+    current_reward = builtin div current_reward_intermediate hundred;
+    
+    match is_round_zero with
+    | True =>
+      msg = {_tag: "AddFunds"; _recipient: _sender; _amount: zero};
+      msgs = one_msg msg;
+      send msgs
+    | False =>
+      msg = {_tag: "AddFunds"; _recipient: _sender; _amount: current_reward};
+      msgs = one_msg msg;
+      send msgs
+    end
+end
+
+transition WithDrawPrincipal(receiver: ByStr20, amount: Uint128)
+    msg = {_tag: "AddFunds"; _recipient: receiver; _amount: amount};
+    msgs = one_msg msg;
+    send msgs
+end

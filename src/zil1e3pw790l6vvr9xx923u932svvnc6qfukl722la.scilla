@@ -1,0 +1,705 @@
+(* ZilWall contract v.1.0.1 *)
+(* Website: https://zilwall.com *)
+(***************************************************)
+(*                 Scilla version                  *)
+(***************************************************)
+
+scilla_version 0
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+import IntUtils ListUtils BoolUtils
+library ZilWall
+
+type Denom =
+  | Zil
+  | Token of ByStr20 (* token address / hash *)
+
+type Coins = | Coins of Denom Uint128 (* denom, amount *)
+
+type Link = 
+  | Link of ByStr20 Uint256
+  
+type Reward = 
+  | Reward of ByStr20 Uint128
+  
+type ImageSize =
+  | ImageSize of Uint32 Uint32
+  
+type ImageBackground = 
+  | ImageBackground of Uint32  
+
+type Paint =
+  | Free
+  | Paid of Coins
+
+type Mode = 
+  | Open
+  | Private of ByStr20
+  
+type State =
+  | State of ImageSize Paint Mode ImageBackground
+
+let zil_address = 0x0000000000000000000000000000000000000000
+let zil = Zil
+let defaultSize  = Uint32 256
+let zero32  = Uint32 0
+let full32  = Uint32 4294967295
+let one32  = Uint32 1
+let zero128  = Uint128 0
+let b32  = Uint64 4294967296
+let b16  = Uint32 65536
+let true = True
+let false = False
+let delay32  = Uint32 10
+
+let get_token_for_reward =
+  fun (reward: Reward) =>
+    match reward with 
+      | Reward token amount => token
+    end
+
+let get_amount_for_reward =
+  fun (reward: Reward) =>
+    match reward with 
+      | Reward token amount => amount
+    end
+    
+let make_first_state =
+  fun (paint: Paint) =>
+    let imageSize = ImageSize defaultSize defaultSize in
+    let mode = Open in
+    let bg = ImageBackground full32 in
+    State imageSize paint mode bg
+
+let optional_value =
+  tfun 'A =>
+  fun (default: 'A) =>
+  fun (opt_val: Option 'A) =>
+    match opt_val with
+    | Some v => v
+    | None => default
+    end
+
+let get_val128 = 
+  fun (value: Option Uint128) =>
+  let opt = @optional_value Uint128 in
+  opt zero128 value 
+  
+let get_mode_from_state =
+  fun (state: Option State) =>
+  match state with
+    | Some state => 
+      match state with 
+        | State imageSize paint mode bg => mode
+      end
+    | None => Open
+  end
+
+let get_x_from_image_size =
+  fun (size: ImageSize) =>
+    match size with 
+      | ImageSize x y => x
+    end
+    
+let get_y_from_image_size =
+  fun (size: ImageSize) =>
+    match size with 
+      | ImageSize x y => y
+    end
+    
+let get_image_size_from_state =
+  fun (state: Option State) =>
+  match state with
+    | Some state => 
+      match state with 
+        | State imageSize paint mode bg => imageSize
+      end
+    | None => ImageSize defaultSize defaultSize
+  end
+  
+let get_paint_from_state =
+  fun (state: Option State) =>
+  match state with
+    | Some state => 
+      match state with 
+        | State imageSize paint mode bg => paint
+      end
+    | None => Free
+  end
+  
+let one_msg =
+  fun (msg: Message) =>
+  let nil_msg = Nil {Message} in
+  Cons {Message} msg nil_msg
+
+let get_low16 : Uint32 -> Uint32 =
+  fun (a : Uint32) =>
+    builtin rem a b16
+    
+let get_high16 : Uint32 -> Uint32 =
+  fun (a : Uint32) =>
+    builtin div a b16
+    
+let get_low32 : Uint64 -> Uint32 =
+  fun (a : Uint64) =>
+    let arem = builtin rem a b32 in
+    let low32 = builtin to_uint32 arem in
+    match low32 with
+    | Some value => value
+    | None => zero32
+    end
+    
+let get_high32 : Uint64 -> Uint32 =
+  fun (a : Uint64) =>
+    let adiv = builtin div a b32 in
+    let high32 = builtin to_uint32 adiv in
+    match high32 with
+    | Some value => value
+    | None => zero32
+    end   
+
+let to_uint128_zero : Uint32 -> Uint128 =
+  fun (a : Uint32) =>
+    let value = builtin to_uint128 a in
+    match value with
+    | Some value => value
+    | None => Uint128 0
+    end 
+
+(* Error exception *)
+type Error =
+  | CodeNotContractOwner
+  | CodeWallInactive
+  | CodeWallActive
+  | CodePixelExists
+  | CodePixelOutside
+  | CodeNotPainter
+  | CodeInvalidParameter
+  | CodeInvalidSender
+  | CodeNotContractOwnerOrOperator
+  | CodeInvalidOperation
+  | CodeNotContractOwnerOrLinker
+
+let make_error =
+fun (result : Error) =>
+  let result_code = 
+    match result with
+    | CodeNotContractOwner             => Int32 -1
+    | CodeWallInactive                 => Int32 -2
+    | CodeWallActive                   => Int32 -3
+    | CodePixelExists                  => Int32 -4
+    | CodePixelOutside                 => Int32 -5
+    | CodeNotPainter                   => Int32 -6
+    | CodeInvalidParameter             => Int32 -7
+    | CodeInvalidSender                => Int32 -8
+    | CodeNotContractOwnerOrOperator   => Int32 -9
+    | CodeInvalidOperation             => Int32 -10
+    | CodeNotContractOwnerOrLinker     => Int32 -11
+    end
+  in
+  { _exception : "WallError"; code : result_code }
+
+(***************************************************)
+(*             The contract definition             *)
+(***************************************************)
+
+contract ZilWall
+(
+  initial_index : Uint32,
+  initial_owner : ByStr20,
+  initial_paint_token : ByStr20,
+  initial_paint_price: Uint128,
+  initial_reward_token : ByStr20,
+  initial_reward_price : Uint128
+)
+
+field operators: Map ByStr20 Bool
+  = Emp ByStr20 Bool
+field linkers: Map ByStr20 Bool
+  = Emp ByStr20 Bool
+  
+field current_image : Uint32 = initial_index
+
+field pixel_colors: Map Uint32 (Map Uint32 (Uint32))
+                = Emp Uint32 (Map Uint32 (Uint32))
+field pixel_owners: Map Uint32 (Map Uint32 (ByStr20))
+                = Emp Uint32 (Map Uint32 (ByStr20))
+field pixel_contribution: Map Uint32 (Map ByStr20 (Uint128))
+                = Emp Uint32 (Map ByStr20 (Uint128))
+field image_states: Map Uint32 State
+             =  let emp_map = Emp Uint32 State in
+                let paint_token = Token initial_paint_token in
+                let coins = Coins paint_token initial_paint_price in
+                let paint = Paid coins in
+                let state = make_first_state paint in
+                builtin put emp_map initial_index state
+field image_blocks: Map Uint32 BNum
+                = let emp_map = Emp Uint32 BNum in
+                builtin put emp_map initial_index _creation_block
+field image_links: Map Uint32 Link
+             = Emp Uint32 Link
+field image_pixels: Map Uint32 Uint128
+             = Emp Uint32 Uint128 
+             
+field metadata: Map Uint256 String
+                = Emp Uint256 String
+                
+field owner : ByStr20 = initial_owner
+field pending_owner : ByStr20 = zil_address
+field reward : Reward 
+              = Reward initial_reward_token initial_reward_price
+field active : Bool = False
+
+
+(* Emit Errors *)
+procedure ThrowError(err : Error)
+  e = make_error err;
+  throw e
+end
+
+procedure Receive(coins : Coins)
+  match coins with
+  | Coins denom amount =>
+    match denom with
+    | Zil =>
+      needs_refund = uint128_gt _amount amount;
+      accept;
+      match needs_refund with
+      | False =>
+      | True =>
+        refund_amount = builtin sub _amount amount;
+        msg = { _tag : "AddFunds"; _recipient: _sender; _amount: refund_amount };
+        msgs = one_msg msg;
+        send msgs
+      end
+    | Token token =>
+      msg_to_token = {
+        _tag : "TransferFrom"; _recipient: token; _amount: zero128;
+        from: _sender; to: _this_address; amount: amount
+      };
+      msgs = one_msg msg_to_token;
+      send msgs
+    end
+  end
+end
+
+procedure ThrowUnlessActive()
+  local_active <- active;
+  match local_active with
+  | True =>
+  | False =>
+    err = CodeWallInactive;
+    ThrowError err
+    end
+end
+
+procedure ThrowIfActive()
+  local_active <- active;
+  match local_active with
+  | False =>
+  | True =>
+    err = CodeWallActive;
+    ThrowError err
+  end
+end
+
+procedure ThrowUnlessSenderIsOwner()
+  current_owner <- owner;
+  is_owner = builtin eq _sender current_owner;
+  match is_owner with
+  | True =>
+  | False =>
+    err = CodeNotContractOwner;
+    ThrowError err
+  end
+end
+
+procedure ThrowUnlessSenderIsOwnerOrOperator()
+  current_owner <- owner;
+  maybe_operator <- operators[_sender];
+  is_owner = builtin eq _sender current_owner;
+  is_allowed = let opt = @optional_value Bool in
+               let is_operator = opt false maybe_operator in
+               orb is_operator is_owner;
+  match is_allowed with
+  | True =>
+  | False =>
+    err = CodeNotContractOwnerOrOperator;
+    ThrowError err
+  end
+end
+
+procedure ThrowUnlessSenderIsOwnerOrLinker()
+  current_owner <- owner;
+  maybe_linker <- linkers[_sender];
+  is_owner = builtin eq _sender current_owner;
+  is_allowed = let opt = @optional_value Bool in
+               let is_linker = opt false maybe_linker in
+               orb is_linker is_owner;
+  match is_allowed with
+  | True =>
+  | False =>
+    err = CodeNotContractOwnerOrLinker;
+    ThrowError err
+  end
+end
+
+procedure SetCurrentState(state: State)
+  img <- current_image;
+  image_states[img] := state;
+  e = { _eventname: "StateUpdated"; current_image: img; state: state };
+  event e
+end
+
+procedure PutPixel(pixel: Uint64)
+  img <- current_image;
+  state <- image_states[img];
+  
+  image_size = get_image_size_from_state state;
+  sx = get_x_from_image_size image_size;
+  sy = get_y_from_image_size image_size;
+  coords = get_low32 pixel;
+  xyl =
+    let x = get_low16 coords in
+    let y = get_high16 coords in
+    let xl = uint32_lt x sx in
+    let yl = uint32_lt y sy in
+    andb xl yl;
+  match xyl with
+    | True => 
+      old_color <- pixel_colors[img][coords];
+      match old_color with
+        | Some color =>
+          err = CodePixelExists;
+          ThrowError err
+        | None => 
+          color  = get_high32 pixel;
+          pixel_colors[img][coords] := color;
+          pixel_owners[img][coords] := _sender
+      end
+    | False =>
+      err = CodePixelOutside;
+      ThrowError err
+  end
+end
+
+procedure SendReward(token: ByStr20, amount: Uint128)
+  needs_send = uint128_gt amount zero128;
+  match needs_send with
+    | False =>
+    | True =>
+      msg_to_token = {_tag : "Mint"; _recipient : token; _amount : zero128;
+                          recipient : _sender; amount : amount};
+      msgs = one_msg msg_to_token;
+      send msgs
+  end
+end
+
+procedure ActivateWallProc()
+  img <- current_image;
+  active := true;
+  e = { _eventname: "WallActivated"; current_image: img };
+  event e
+end
+
+procedure DeactivateWallProc()
+  img <- current_image;
+  active := false;
+  e = { _eventname: "WallDeactivated"; current_image: img };
+  event e
+end
+
+procedure MoveFunds(paint: Paint, rew: Reward, pixel_count : Uint128)
+  rew_token = get_token_for_reward rew;
+  rew_amount = get_amount_for_reward rew;
+  reward_amount = builtin mul pixel_count rew_amount;
+  match paint with
+    | Free => 
+    | Paid coin => 
+      match coin with
+        | Coins denom amount =>
+          cost_amount = builtin mul pixel_count amount;
+          needs_receive = uint128_gt cost_amount zero128;
+          match needs_receive with
+            | False =>
+            | True => 
+              cost = Coins denom cost_amount;
+              Receive cost
+          end
+      end
+  end;
+  SendReward rew_token reward_amount
+end
+
+procedure ProcessPixels(mode: Mode, pixels: List Uint64)
+  match mode with
+    | Open => 
+    | Private painter => 
+      is_painter = builtin eq _sender painter;
+      match is_painter with
+        | True =>
+        | False => 
+        err = CodeNotPainter;
+        ThrowError err
+      end
+  end;
+  forall pixels PutPixel
+end
+
+procedure UpdateContribution(img: Uint32, pixel_count : Uint128)
+  maybe_pixels <- image_pixels[img];
+  maybe_contribution <- pixel_contribution[img][_sender];
+  new_pixels = 
+    let old = get_val128 maybe_pixels in
+    builtin add old pixel_count;
+  new_contribution =
+    let old = get_val128 maybe_contribution in
+    builtin add old pixel_count;
+  image_pixels[img] := new_pixels;
+  pixel_contribution[img][_sender] := new_contribution
+end
+
+(* Transitions *)
+transition TransferOwnership(
+  new_owner : ByStr20
+)
+  ThrowUnlessSenderIsOwner;
+  existing_owner <- owner;
+  new_owner_is_existing_owner = builtin eq new_owner existing_owner;
+  match new_owner_is_existing_owner with
+  | True =>
+    err = CodeInvalidParameter;
+    ThrowError err
+  | False =>
+    pending_owner := new_owner
+  end
+end
+
+transition AcceptPendingOwnership()
+  new_owner <- pending_owner;
+  sender_is_pending_owner = builtin eq _sender new_owner;
+  match sender_is_pending_owner with
+  | False =>
+    err = CodeInvalidSender;
+    ThrowError err
+  | True =>
+    owner := new_owner;
+    pending_owner := zil_address;
+    e = { _eventname: "OwnershipTransferred"; owner: new_owner };
+    event e
+  end
+end
+
+transition AddOperator(operator: ByStr20)
+  ThrowUnlessSenderIsOwner;
+  is_operator <- operators[operator];
+  match is_operator with
+  | None =>
+  | Some val => 
+    err = CodeInvalidParameter;
+    ThrowError err
+  end;
+  operators[operator] := true;
+  e = {_eventname : "OperatorAdded"; operator : operator};
+  event e
+end
+
+transition RemoveOperator(operator: ByStr20)
+  ThrowUnlessSenderIsOwner;
+  is_operator <- operators[operator];
+  match is_operator with
+  | Some val => 
+  | None =>
+    err = CodeInvalidParameter;
+    ThrowError err
+  end;
+  delete operators[operator];
+  e = {_eventname : "OperatorRemoved"; operator : operator};
+  event e
+end
+
+transition AddLinker(linker: ByStr20)
+  ThrowUnlessSenderIsOwner;
+  is_linker <- linkers[linker];
+  match is_linker with
+  | None =>
+  | Some val => 
+    err = CodeInvalidParameter;
+    ThrowError err
+  end;
+  linkers[linker] := true;
+  e = {_eventname : "LinkerAdded"; linker : linker};
+  event e
+end
+
+transition RemoveLinker(linker: ByStr20)
+  ThrowUnlessSenderIsOwner;
+  is_linker <- linkers[linker];
+  match is_linker with
+  | Some val => 
+  | None =>
+    err = CodeInvalidParameter;
+    ThrowError err
+  end;
+  delete linkers[linker];
+  e = {_eventname : "LinkerRemoved"; linker : linker};
+  event e
+end
+
+transition FinalizeImage()
+  ThrowUnlessSenderIsOwnerOrOperator;
+  ThrowIfActive;
+  img <- current_image;
+  maybe_old_block <- image_blocks[img];
+  b <- &BLOCKNUMBER;
+  can_finalize = let opt = @optional_value BNum in
+                 let old_block = opt _creation_block maybe_old_block in
+                 let deadline = builtin badd old_block delay32 in
+                   builtin blt deadline b;
+  match can_finalize with
+  | True =>
+    maybe_state <- image_states[img];
+    match maybe_state with
+    | Some state =>
+      next_image = builtin add img one32;
+      current_image := next_image;
+      e = { _eventname: "CurrentImageChanged"; current_image: next_image; block: b };
+      event e;
+      image_blocks[next_image] := b;
+      SetCurrentState state
+    | None =>
+      err = CodeInvalidOperation;
+      ThrowError err
+    end
+  | False =>
+    err = CodeInvalidOperation;
+    ThrowError err
+  end
+end
+
+transition UpdateMetadata(id: Uint256, meta: String)
+  ThrowUnlessSenderIsOwnerOrOperator;
+  metadata[id] := meta;
+  e = { _eventname: "MetadataUpdated"; id: id };
+  event e
+end
+
+transition DeleteMetadata(id: Uint256)
+  ThrowUnlessSenderIsOwnerOrOperator;
+  delete metadata[id];
+  e = { _eventname: "MetadataDeleted"; id: id };
+  event e
+end
+
+transition AddLink(image: Uint32, link: ByStr20, id: Uint256)
+  ThrowUnlessSenderIsOwnerOrLinker;
+  has_link <- image_links[image];
+  match has_link with
+    | None =>
+    | Some val =>
+      err = CodeInvalidOperation;
+      ThrowError err
+  end; 
+  value = Link link id;
+  image_links[image] := value;
+  e = { _eventname: "LinkAdded"; image: image; link: value};
+  event e
+end
+
+transition DeleteLink(image: Uint32)
+  ThrowUnlessSenderIsOwnerOrLinker;
+  has_link <- image_links[image];
+  match has_link with
+    | Some val =>
+    | None =>
+      err = CodeInvalidOperation;
+      ThrowError err
+  end; 
+  delete image_links[image];
+  e = { _eventname: "LinkDeleted"; image: image };
+  event e
+end
+
+transition UpdateState(newState: State)
+  ThrowUnlessSenderIsOwnerOrOperator;
+  ThrowIfActive;
+  SetCurrentState newState
+end
+
+transition UpdateRewardToken(reward_token : ByStr20,
+                             reward_price : Uint128)
+  ThrowUnlessSenderIsOwnerOrOperator;
+  new_reward = Reward reward_token reward_price;
+  reward := new_reward;
+  e = { _eventname: "RewardUpdated"; token: reward_token; price: reward_price};
+  event e
+end
+
+transition ActivateWall()
+  ThrowUnlessSenderIsOwnerOrOperator;
+  ThrowIfActive;
+  ActivateWallProc
+end
+
+transition DeactivateWall()
+  ThrowUnlessSenderIsOwnerOrOperator;
+  ThrowUnlessActive;
+  DeactivateWallProc
+end
+
+transition PutPixels (pixels: List Uint64)
+  ThrowUnlessActive;
+  img <- current_image;
+  state <- image_states[img];
+  mode = get_mode_from_state state;
+  ProcessPixels mode pixels;
+  pixel_count =
+    let list_length64 = @list_length Uint64 in
+    let pixel_count32 = list_length64 pixels in
+    to_uint128_zero pixel_count32;
+  rew <- reward;
+  paint = get_paint_from_state state;
+  MoveFunds paint rew pixel_count;
+  UpdateContribution img pixel_count;
+  e = { _eventname: "ImageUpdated"; current_image: img; pixel_count: pixel_count };
+  event e
+end
+
+
+(***************************************)
+(*             Callbacks               *)
+(***************************************)
+
+transition RecipientAcceptTransferFrom(
+  initiator : ByStr20,
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+  is_valid_transfer_to_self =
+    let self_triggered = builtin eq initiator _this_address in
+    let is_transfer_to_self = builtin eq recipient _this_address in
+    andb self_triggered is_transfer_to_self;
+
+  match is_valid_transfer_to_self with
+  | False =>
+    err = CodeInvalidOperation;
+    ThrowError err
+  | True => (* noop *)
+  end
+end
+
+transition TransferFromSuccessCallBack(
+  initiator : ByStr20,
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+  (*Do nothing*)
+end
+
+transition MintSuccessCallBack(minter: ByStr20, recipient: ByStr20, amount: Uint128)
+  (*Do nothing*)
+end

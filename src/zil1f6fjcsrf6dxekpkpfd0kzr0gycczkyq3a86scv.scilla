@@ -1,0 +1,371 @@
+(*
+    /$$      /$$                  /$$      /$$                /$$$$$$$$                      /$$$$$$ /$$         /$$      
+   | $$$    /$$$                 | $$     | $$               | $$_____/                     /$$__  $| $$        | $$      
+   | $$$$  /$$$$ /$$$$$$  /$$$$$$| $$   /$| $$ /$$$$$$       | $$   /$$$$$$ /$$$$$$$       | $$  \__| $$/$$   /$| $$$$$$$ 
+   | $$ $$/$$ $$/$$__  $$/$$__  $| $$  /$$| $$/$$__  $$      | $$$$|____  $| $$__  $$      | $$     | $| $$  | $| $$__  $$
+   | $$  $$$| $| $$$$$$$| $$  \__| $$$$$$/| $| $$$$$$$$      | $$__//$$$$$$| $$  \ $$      | $$     | $| $$  | $| $$  \ $$
+   | $$\  $ | $| $$_____| $$     | $$_  $$| $| $$_____/      | $$  /$$__  $| $$  | $$      | $$    $| $| $$  | $| $$  | $$
+   | $$ \/  | $|  $$$$$$| $$     | $$ \  $| $|  $$$$$$$      | $$ |  $$$$$$| $$  | $$      |  $$$$$$| $|  $$$$$$| $$$$$$$/
+   |__/     |__/\_______|__/     |__/  \__|__/\_______/      |__/  \_______|__/  |__/       \______/|__/\______/|_______/ 
+++++++++////////////////////////////////////////////////////////////////++++++/+/++++++++++++++++++++++++++++++++++++++++++
++++++++++/////////////////////////////////////////////////////////////+++++++++++++++++++++++++++++++++++++++++++++++++++++
++++++++++/+//////////////////////////////////////////////:::://////////////////++++++++++++++++++++++++++++++++++++++++++++
+++++++++++++///////////////////////////////////////::-----.....-------::::///////++++++++++++++++++++++++++++++++++++++++++
+++++++++++++///////////////////////////////////::--.........----------:::::::://+////++++++++++++++++++++++++++++++++++++++
+++++++++++++///////////////////////////////::::--....-----::://///::::::::::////++++////+++++++++++++++++++++++++++++++++++
+++++++++++++///////////////////////////////::-..-----::::------------::///////////++/////////++++++++++++++++++++++++++++++
+++++++++++++/////////////////////////////:-----:::::------..------::://+++++/+++++++++/::////++++++++++++++++++++++++++++++
+++++++++++++////////////////////////+/:-------------------:::---:://+//////+ooooososss+/:::/++++/++++++++++++++++++++++++++
+++++++++++++/////////////////////////:::-------------:::::---://+++///++oooooshhhsyyyyo/::://++++++++++++++++++++++++++++++
++++++++++++++//////////////////////:-----------:--::------:/++++//:/+ossysyhhyhhhhhhhhs+::-:://+++++++/++++++++++++++++++++
++++++++++++++//////////////:::::--------------:::--...-://////:::/+ooyyyyhhhhyyhdddhhyo//////+o++++oo++++/+++++++++++++++++
++++++++++++++//////////::::::::-------------:::--...-:////:::::/+ooyhdhdhdhhhyyhddhhhyso///+++ooo++oo+++++//+++++++++++++++
+++++++++++++//////////////+//::::------:///::---.---:::/:---:/+osyhhdddhdhdyyyymmmhyysosooooo+oooooo+++/++///++++++++++++++
+++++++++++++/////////++++o++//:::::////+/:::--..--:::::----/+ossyhhhddhhddyyyydNNmdhhsoossyysoo+++ooooo+//:///+++++++++++++
++++++++++++////////+ossooo++/+++oooo++/:::-------//::----/ooosyyhhhhhdddmhsyydmmmmmdhosossyysssso++++ooo++/////++++++++++++
+++++++++++/+/////osyyso++ooosssso+++////:::--:-:::-.--:/+ossssyyyhyyhmdhhyhddhmmNmddysysosssssssysso++++oo+++/:/+++++++++++
+++++++++++/////+ossssoo++osssooooooooo++/--::::--.--:/osoo+oosyyyyhdmdyhyhmdsdNNmdddshyysossoooosyysso++++o++//://+++++++++
++++++++++++////+ossssyhdhyhyyyyyyysoss+/:////-----:/osoooooossssshddhyyyhddyhmNmdhhyyyyyoosyo+++++osysooo//o+++++//++++++++
+++++++++++//++++oyyhhhhhhhhhyyyyyyyys+/+++/:----/+ossooossssossyhhyysoshddyshmdddssyysoooyssss+++/+++oo+++//osooso+++++++++
+++++++++///+oososyyyyyhyyyhhyhyyhhyo++++//::::/+sooooosssssooysyyooooohddssyhdyyyssyo++/oyssss++/////++o+////oysyyyo+++++++
++++++++++/+++ossssssssyysyhhhhddhsooo+//::/+ossoooooossssssssoys+++oohhhsossyyosysso//:/ossoso+++///////+++//oyhhyhyo++++++
++++++++++osyssyysssyyyhdddddhddyso+/////+syysoooooossssssssssso++++osysoosooooossoo+::/++oo+++////////://++///sshhhhs++++++
+++++++++ohddhhdddhdddmdddddddysso+/ossyhdhysyyyysssssssssysyo++++oooso++o++o+++++++/:-/////:://::::://::/++////oyddhh++++++
++++++++odNmmmdhhhhyhhhhhdddhyyyssyyyhddhhhhddddyyyhyyyyyssso+++++oso+//o++oo/://////:-::-::--:::---::/+/:/++//++oyddho+++++
++++++++ymmmdmmNmdddhhyyyyysyyyyyyhhdmmddmmmmmdhhhhhhhhhyysoooooooso++++oooso:-://+/:-.-:------------:-/+/:/oo+soosdmds+++++
+++++++ohdmmNNNNNNNNNmmmdhhhyysyyhdmmddmNNmmmmddddddddhhyyyyyosoosso+oooooso/:-:+++/:-.-:--...-----:-::-+++/+ossyysymms+++++
+++++/+ymNNMMMMMMMMMNNNNNdddhhdmmmmmddmNNNNNmmmmmmmddddddddhyssssyyssssysss+:--/oo+/:---::..---:::::::///oooo+shhhdhdmy+++++
++++++smMMMMMMMMMMMMMMMMNNNNNmmmNNmmNNNNNNmmmmmmmmmmmdddmmdhhyssyyhyyyyyyys/::/oso/+::--::-.---///:///+o+oysyhohdddddds+++++
++++++sNMMMMMMMMMMMMMNNNNNNmmmmNNMMMMNMMNmmNNmmmmmmmmmmNmdhhyyosshdhhyyyyso/++/oyo/+//:::::.-:.:////++ososyhhdhydmddmho+++++
++++++sNMMMMMMMMNNNNNmmninesdmmNNNNNMMMNNNNNNNNNmmmmmNNmmhysyosssdddhyyyyo+o+/:oso++//:-----::.:::/++++ssyyhhmmhhhddmh++++++
++++++oNMMMMMMMMMMMMMNmdhdmneekoNNMMMMMNNMNNNNmmmNNNNmmdyooosoyoymdhyyysso///:/yso+/:/:--..-:/--:::/+o+syyyddmmmmmddmy++++++
+++++++mMMMMMMMMMMMMMhatzzMNMNNNNNNNNNNNNNNmmmmNNNNNmdyo++oyoosshmhyyo+/++++++oooo//:::----.-:::-:::/+ossyyhNmmddmmdho++++++
+++++++dMMMMMMMMMNNNMMgreasyMMNMNNNNmdhyyddmmmmmmdhyo+////ssso+ssooo+::-:++/+/+/+/:-...-::---:--::/://ooosyhmmNNNNNdo+++++++
+++++++sNMMMMMMMMMbuckarooMNNNNmddhhysssyyyssso+++++//::::///-:::---..--.--::://:-........--......-:::/+oshddmNNNNmy++++++++
++++++++dMMMMMMMMMMMMMMMMNNNmhyysssossooooo++++++////:::---:------...--.................``````````..-.-/oyhddmNNNNdo++++++++
++++++++sNMMMMMMMMMMMNNNNNNdysoo+o++ooooo++++++++++++++//::--::::::---------------.............````....-+yhdddmNNmo+++++++++
++++++++odMMMMMMNMMNNNNNNmmhso++++++oooooooo++ooooossyysssoo+/////::::-----::::::-::::::--::-.-:-.......-shmmdmNNh++++++++++
+++++++++sNMNNNNNNNNmmmmmmhyo+///+++oooosssssssooosyhdmmmmmddhysso+/::------:+oooosyyyso+/:--...---....`./sdmNNMdo++++++++++
+++++++++odNNNNNNNmNNNmmddys+/////++ooossyyysoo+++ooooosyhhhddddhyo+/:--..--:+syyyydddys+:-.----..---....-+hmNNNs+++++++++++
++++++++++hNNNMMNmmmmmmmdhys+/////+++oossyyssso+osyddmmddyshhyhhyso+/:-....--:///+o+oshmmmmho/-------...`.:sdmmho+++++++++++
++++++++++sNNNMMMmdmddmmddyoo+///+++oooossssshhdmNNNNNMMNmdyyhdhyso+:-...``.-/o+//oyyymmNNNNNmh/---...```.-+ydhyyso+++++++++
+++++++++++dmmMMMmddmmmmddyso+/++++++oosssyhmmmmmdhduck+ohhhysyys+/-..````-:::/+o//:+supremeshdh+:--..```.-+ssssso++++++++++
+++++++++++ohmNMMdyhddddddhsso++o+++oosssyyyyyyysoo++//:--::/o++osso/-..````....--------:::---::/:-..````.-+oooo+//+++++++++
++++++++++++oymNNdoshdmmmdhyssoooo++oo++oosoooosoossoo+//:::-:++osoo/:..`````....--::////::-..........`...:++//////+++++++++
++++++++++++++smNd+/shdmmdhyyssoo++++//://+oooooooooo+//::---/oooo++/:..```````-------::::---....```````.-:///:://++++++++++
+++++++++++++++smdo:+sddmdhyyssoo++++/:---:/+ooo+/////::::/::+oo+++//:-.````````.-----....---..`````````.-://::/++++++++++++
+++++++++++/++++sho//+yddhyyyyssooo++/:------:///+////////:::/++/////:-..`````````.-----......````````...-//+//+++++++++++++
+++++++++++++/+++so/+++ossyyyysssooo++/::----..-.-----------://////::--..````````````......```````````...-//++++++++++++++++
+++++++++++++////++//+//+osssyssssooo++///::----..........--://////:--...```````````````````````````...-.:+:/+++++++++++++++
+++++++++++++///+/+o/://ooosssysysssooo+++++/:---.........--:+oo+++/:-...``````.-.````````````.......---.:+///++++++++++++++
++++++++++++++//+//+o/++oooysssyyyysssoooooooo+/::---....--:oyo//++/::-..```````-:..`````````......----../+///++++++++++++++
++++++++++++++///+/+yy+//+++oosssyysssssooooooo+//:---..--:ohy+//++o++:--.......`//-..`````````...-----.-++//+++++++++++++++
++++++++++++++//////odhs++/+oooosyyysooooooooo++//:::----:oyyssssyyhhhyo/::::/+/-/o/-...````````..------/+++++++++++++++++++
++++++++++++++//////+ydmdyyyhyooossssssoooooo++//::::---:oso+/sdmNNNNmdhyso+oyy+::///:-....`````..-----:++++++++++++++++++++
+++++++++++++++////+/+ymNNNNMdoooossoooooooo++++//:::--:+so++/+shhhhhdmmhs+::---::-://:--.....`......--/++++++++++++++++++++
++++++++++++++++//////+ymNMMMNyooooooooooooo+++++//::::/oo+++++/++++++oo/::-...-:---::::--...........-:/++++++++++++++++++++
++++++++++++++++///////+ydNMMNhsssoooo++o+oooooo++//:::+oo++o++++//:----....```...--:::::---.........-:/++++++++++++++++++++
++++++++++++++++/////+//+yddNNhsosoo++++++ooooooo++///:/ooooo++/::--......```````.--://::::--........-/+++++++++++++++++++++
++++++++++++++++///////++oysydhsossso+oooooooossoo+///////+++++/:----.....``````..---////:::--......-:/+++++++++++++++++++++
++++++++++++++++/////////+o//ooosssso+oooooooossoo++++++/++oooo+///::/:--::---....:::///+//:--......-/++++++++++++++++++++++
++++++++++++++++++//////+ss::/++ossysooooooooooooo++/+sossyyyhhdddmmmNNmmmNmmddhysso+++/+/::-.......-/++++++++++++++++++++++
++++++++++++++++/++//+oooyy:::/+ossysoooooooooo++//::/syhdmmmNNNNNNNmNmmdddhysyys+/+oyo+/::---......:/++++++++++++++++++++++
++++++++++++++++//+ohdmdyhd/:::/osssssssssooooo++/::--+hdysosyhhdddyssooooo++//::--.-/s+/::----....-/+++++++++++++++++++++++
+++++++++++++++//ohNMNdNmhms:::/+sssossyyyssoooo+/:---syo+++++ossssssooo+++/--.----.--oy+/:::------:/+++++++++++++++++++++++
++++++++++++++/+ymNMm+:yh/dN+::/+syysosyyyyyyysso+/:-/o++/:::::/+oo++ooo+++/:--.------/hy+//:::::::/++++++++++++++++++++++++
++++++++++++++ohmmNy.`ommhNMd////oyysssyyhhhyyyyso+//s//////::://+++////:/:::----------+ys+//////:/+++++++++++++++++++++++++
++++++++osyhdmNNNNNs../mMMMMMho//+shyyoyhyhhyyyyyso+so+//:://:///::::--------.........--oys///////++++++++++++++++++++++++++
++osyhdmmmmmmmmNNNNNmo-sNNddNNmo/+oyhhyyhhyyhysysoo++ooo+/:-----:---.......```````````.-:sho/::/++++++++++++++++++++++++++++
+dmmmmmmmmNNNNNNNNNNNNd++NddNNMmo++oyhhyhdhyyhyyhso/+ssso+/:-------.......```````````..-/shy+//hdddhhhhyysoo++++++++++++++++
+mmmmmmmNNNNNNNNNNMMMMMNdMMNNNMMmso+oyddddddhhhhhdhyhyysso+/:::::----........``````....+hmdysodNNmNmmmmmmmmmmddhysoo++++++++
+mmmmmmNNNNNNNNNNMMMMMMMMMMMMNmNMmhsooshmmNmddddmmmmNmhyysso//////:::::-----........--+dmmdydNNNNNNNNNNNNNNNNNNNmmmmddhyso++
+mmNNNNNNNNNNNNNNMMMMMMMMMMMMMNNMMmddyosydNNNNmmmmmmmNNmdhhysoo+++++++/////:::::::::/ossyhdNNNNNNNNNNNNNNNNNNNNNNNNNNNNmmmdh
+NNNNNNNNNNNNNNNNNNNMMMMMMMMMMNMdmNMMNdsoyhNMNNmdddddddNNmmddhhyysssooooooo+++++oo+/++shmmdNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNmmm
+NNNNNNNNNNNNNNNNNNNNNMMMMMMMMNMNMNNMMMNhosymNNNNdddhhhhmNNNNNmmmmddhhhhyyyyysso+//++/mMMNddNNNNNNNNNNNNNNNNNNNNNNNNNNNNmmmm
+NNNNNNNNNNNNNNNNNNNNNNNMMMMMMMMMMMMMNMMMdooshmNNNNmdhhhhdmNNNNNNNNmmmmmmmmdyo+////:-.+mMNyhydNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN
+NNNNNNNNNNNNNNNNNNNNNNNNNNMMMMMMMMMMNMMMNdhsoshmmNNNmddddhdmmNNNNNNNNNNmds+++///:--.../mMmmydMNNNNNNNNNNNNNNNNNNNNNNNNNNNNN
+NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNMMMMMMMMNmNNMNmdssyddmNmmddddhddddmNNNmdhyso+++/::---....+mMMNNMMNNNNNNNNNNNNNNNNNNNNNNNNNNNN
+NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNMMMmmMNMMMMMMNmysyhdmmmmddddddddddddhhhysso+:---....../dMMMNdNMMNNNNNNNNNNNNNNNNNNNNNNNNNN
+MMMMNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNMMMMMMMNNNMMMMdssyhdmmmmddmmddddddddhhys+:---.......:hMMMmhmMMMNNNNNNNNNNNNNNNNNNNNNNNNN
+MMMMMMMMNNNNNNNNNNNNNNNNNNNNNNNMMMNNNNMMMMNdmmMMMMdsoosyhdmmmmdddddddhhhho/-----.......-omMMNNNMMMMNNNNNNNNNNNNNNNNNNNNNNNN
+MMMMMMMMMMNNNNNNNNNNNNNNNNNNNNNMNNNMNNNNNMMmNmNMMMNysoo+ossyhdmmmNNNNmddhs+:--.........-+hNmmmNMMMMMNNNNNNNNNNNNNNNNNNNNNNN
+MMMMMMMMMMMMMNNNNNNNNNNNNNNNNNNNMNMMMNNNNNNNMMMMMMNmmh+/::::::::::::/+oo+//:--........:odddmmddmNMMMNNNNNNNNNNNNNNNNNNNNNNN
+MMMMMMMMMMMMMMMMNNNNNNNNNNNNNNNNNNNNMMNNMMMNNNMMNNNNNNds/--..`````````.-:/:----.......-+hNNNNmdhhNMMNmmNNNNNNNNNNNNNNNNNNNN
+MMMMMMMMMMMMMMMMNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNmdNMMNmdy:......````````.-:::---.......-+dNmhdmhymMMNNmmNNNNNNNNNNNNNNNNNNN
+NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNmmNNNmh/++:-..``````````.............:+hhhmhdysNNMNmNNmNNNNNNNNNNNNNNNNN
+NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNmmmmNmmNmdhs/-.````````````..`....-:ooyddhhhs/ydNNNmNNNNNNNNNNNNNNNNNNN
+    /$$      /$$                  /$$      /$$                /$$$$$$$$                      /$$$$$$ /$$         /$$      
+   | $$$    /$$$                 | $$     | $$               | $$_____/                     /$$__  $| $$        | $$      
+   | $$$$  /$$$$ /$$$$$$  /$$$$$$| $$   /$| $$ /$$$$$$       | $$   /$$$$$$ /$$$$$$$       | $$  \__| $$/$$   /$| $$$$$$$ 
+   | $$ $$/$$ $$/$$__  $$/$$__  $| $$  /$$| $$/$$__  $$      | $$$$|____  $| $$__  $$      | $$     | $| $$  | $| $$__  $$
+   | $$  $$$| $| $$$$$$$| $$  \__| $$$$$$/| $| $$$$$$$$      | $$__//$$$$$$| $$  \ $$      | $$     | $| $$  | $| $$  \ $$
+   | $$\  $ | $| $$_____| $$     | $$_  $$| $| $$_____/      | $$  /$$__  $| $$  | $$      | $$    $| $| $$  | $| $$  | $$
+   | $$ \/  | $|  $$$$$$| $$     | $$ \  $| $|  $$$$$$$      | $$ |  $$$$$$| $$  | $$      |  $$$$$$| $|  $$$$$$| $$$$$$$/
+   |__/     |__/\_______|__/     |__/  \__|__/\_______/      |__/  \_______|__/  |__/       \______/|__/\______/|_______/ 
+
+*)
+
+
+scilla_version 0
+
+import BoolUtils PairUtils ListUtils IntUtils 
+library DuckManualMerkle
+
+let u128_zero     = Uint128 0
+let u128_one      = Uint128 1
+let bnum_month    = Uint128 57600
+let bool_true     = True
+let bool_false    = False
+
+type Operation    = | Add | Sub
+let add_operation = Add
+let sub_operation = Sub
+
+let one_msg = 
+  fun (msg : Message) => 
+  let nil_msg = Nil {Message} in
+    Cons {Message} msg nil_msg
+
+type Error =
+| UnreachableCodePath
+| CodeNotContractOwner  
+| UserAlreadyHasAccount
+| UserHasNoRewardsAtBlock
+| AdminNotTimeToClaim
+| AdminNotCorrectBlockToLock
+
+let make_error =
+  fun (result: Error) =>
+    let result_code = 
+      match result with
+      | UnreachableCodePath                => Int32 -0
+      | CodeNotContractOwner               => Int32 -1
+      | UserAlreadyHasAccount              => Int32 -2
+      | UserHasNoRewardsAtBlock            => Int32 -3
+      | AdminNotTimeToClaim                => Int32 -4
+      | AdminNotCorrectBlockToLock         => Int32 -5
+       end
+    in
+    { _exception : "Error"; code : result_code; res : result}
+
+contract DuckManualMerkle
+(
+  contract_owner                       : ByStr20,
+  duck_fungible_token_address          : ByStr20,
+  duck_current_rewarder_address        : ByStr20
+)
+
+field user_claim_rewards               : Map BNum (Map ByStr20 Uint128) = Emp BNum (Map ByStr20 Uint128) (* All the users with their rewards at some reward block         *)
+field remaining_rewards_at_block       : Map BNum Uint128 = Emp BNum Uint128                             (* The total amount of rewards remaining at some reward block    *)
+field reward_period_block              : Map BNum BNum    = Emp BNum BNum                                (* The calculated locked block for a reward period (now+1month)  *)
+field current_rewarder_address         : ByStr20 = duck_current_rewarder_address                         (* The current address deligated with inputting reward rows      *)
+
+field contract_held_duck               : Uint128 = u128_zero                                             (* The current amount of $DUCK held by the contract             *)
+field amount_unique_claims             : Uint128 = u128_zero                                             (* The amount of unique claims the contract has processed       *)
+field amount_total_rewarded            : Uint128 = u128_zero                                             (* The total amount of $DUCK claimed by individual claims       *)
+
+
+(****************************************************************************************)
+
+procedure ThrowError(err : Error)
+  e = make_error err;
+  throw e
+end
+
+procedure IsContractOwner()
+  is_contract_owner = builtin eq contract_owner _sender;
+  match is_contract_owner with
+  | True => 
+  | False =>
+    err = CodeNotContractOwner;
+    ThrowError err
+  end
+end
+
+procedure IsContractRewarder()
+  cra <- current_rewarder_address;
+  is_contract_rewarder = builtin eq cra _sender;
+  match is_contract_rewarder with
+  | True => 
+  | False =>
+    err = CodeNotContractOwner;
+    ThrowError err
+  end
+end
+
+procedure IsOwnerOrRewarder()
+  cra <- current_rewarder_address;
+  is_contract_owner = builtin eq contract_owner _sender;
+  is_contract_rewarder = builtin eq cra _sender;
+  owner_or_rewarder = orb is_contract_owner is_contract_rewarder;
+  match owner_or_rewarder with
+  | True => 
+  | False =>
+    err = CodeNotContractOwner;
+    ThrowError err
+  end
+end
+
+procedure updateContractHeldAmount(operation: Operation, amount: Uint128, claim_block: BNum)
+  now_amount_held <- contract_held_duck;
+  now_unique_claims <- amount_unique_claims;
+  now_total_rewarded <- amount_total_rewarded;
+  now_remaining_rewards <- remaining_rewards_at_block[claim_block];
+  match operation with
+    | Add =>
+      (* admin adds duck incrementer *)
+      new_contract_held_duck = builtin add now_amount_held amount;
+      contract_held_duck := new_contract_held_duck
+
+    | Sub =>
+      (* reduce user claim amount - amount*)
+      new_contract_held_duck = builtin sub now_amount_held amount;
+      contract_held_duck := new_contract_held_duck;
+            
+      (* amount of unique claims + 1*)
+      new_amount_unique_claims = builtin add now_unique_claims u128_one;
+      amount_unique_claims := new_amount_unique_claims;
+      
+      (* amount of total claimed + amount *)
+      new_total_rewarded = builtin add now_total_rewarded amount;
+      amount_total_rewarded := new_total_rewarded;
+      
+      (* reduce remaining rewards at block - amount*)
+      match now_remaining_rewards with
+        | Some some_now_remaining_rewards => 
+            new_now_rewards_at_block_value = builtin sub some_now_remaining_rewards amount;
+            remaining_rewards_at_block[claim_block] := new_now_rewards_at_block_value
+        | None => 
+            err = UserHasNoRewardsAtBlock;
+            ThrowError err
+      end
+  end
+end
+
+procedure sendReward(amount: Uint128, claim_block: BNum)
+  send_reward_call = {
+    _tag: "Transfer";
+    _recipient: duck_fungible_token_address;
+    _amount: Uint128 0;
+    to: _sender;
+    amount: amount
+    }; 
+  msgs = one_msg send_reward_call;
+  send msgs;
+  
+  e = {_eventname: "sendRewardSuccess"; from: _sender; to: _sender; amount: amount};
+  event e;
+  updateContractHeldAmount sub_operation amount claim_block
+end
+
+(****************************************************************************************)
+
+(* Dev: (3) User claims for a reward period *)
+transition userClaimRewardRow(claim_block: BNum)
+  user_has_some_reward <- exists user_claim_rewards[claim_block][_sender];
+  match user_has_some_reward with
+    | True =>
+      users_claim  <- user_claim_rewards[claim_block][_sender];
+      match users_claim with
+        | Some amount =>
+          sendReward amount claim_block;
+          delete user_claim_rewards[claim_block][_sender]
+        | None =>
+          err = UnreachableCodePath;
+          ThrowError err
+      end
+    | False =>
+      err = UserHasNoRewardsAtBlock;
+      ThrowError err
+  end
+end
+
+(****************************************************************************************)
+
+(*Dev: (1) Admin adds a claim row for each LP reward record *)
+(*Dev: todo: find a way to pass List ByStr20+List Uint128 instead of passing each row*)
+transition adminAddClaimRewardRow(claim_block: BNum, user_wallet: ByStr20, reward_amount: Uint128)
+  IsContractRewarder;
+
+  user_claim_rewards[claim_block][user_wallet] := reward_amount 
+  
+end
+
+(*Dev: (2) Admin sets the amount of rewards set for a period and locks admin from reclaiming*)
+transition adminSetRewardAmountLock(claim_block: BNum, max_reward_amount: Uint128)
+  IsOwnerOrRewarder;
+  
+  local_claims_at_block <- user_claim_rewards[claim_block]; 
+  match local_claims_at_block with
+    | Some some_local_claims_at_block => (* Can only add a lock where claim rewards exist  *)
+      claim_block_lock = builtin badd claim_block bnum_month;
+      remaining_rewards_at_block[claim_block]:= max_reward_amount; (* Reward for period  *)
+      reward_period_block[claim_block]:= claim_block_lock          (* Lock admin reclaim till 1 month from end claim block  *)
+    | None =>
+      err = AdminNotCorrectBlockToLock;
+      ThrowError err
+  end
+end
+
+(* Dev: (4) Admin reclaims a reward period after 1 month+ has passed in blocks *)
+transition adminReclaimAfterTime(claim_block: BNum)
+ IsContractOwner;
+ 
+ this_block <-& BLOCKNUMBER;
+ block_valid_to_claim_after <- reward_period_block[claim_block];
+ match block_valid_to_claim_after with
+   | Some some_block_valid_to_claim_after =>
+      is_valid_claim = builtin blt this_block some_block_valid_to_claim_after; (* Is this block, less than the valid time block => true (not time) *)
+       match is_valid_claim with
+      | False =>  
+         rewards_at_claim_block_remaining <- remaining_rewards_at_block[claim_block];
+         match rewards_at_claim_block_remaining with 
+           | Some some_rewards_at_claim_block_remaining =>
+                sendReward some_rewards_at_claim_block_remaining claim_block;
+                delete user_claim_rewards[claim_block]
+           | None =>
+             err = UserHasNoRewardsAtBlock;
+             ThrowError err
+         end
+      | True =>
+        err = AdminNotTimeToClaim;
+        ThrowError err
+     end
+   | None =>
+ end 
+end
+
+(* Dev: Admin changes the rewarder address *)
+transition adminChangeRewarder(rewarder_address: ByStr20)
+  IsContractOwner;
+  
+  current_rewarder_address := rewarder_address
+end
+
+(* Dev: If erroniously entered data, allows for removal of entries *)
+transition adminResetRewards(claim_block: BNum)
+  IsContractOwner;
+  
+  delete user_claim_rewards[claim_block];
+  delete remaining_rewards_at_block[claim_block];
+  delete reward_period_block[claim_block]
+end
+
+(****************************************************************************************)
+
+transition TransferSuccess(sender: ByStr20, recipient: ByStr20, amount: Uint128)
+end
+
+transition TransferSuccessCallBack(sender: ByStr20, recipient: ByStr20, amount: Uint128)
+end
+
+(*Dev: If the contract is accepting funds from the contract_owner - then increment else dont *)
+transition RecipientAcceptTransfer(sender: ByStr20, recipient: ByStr20, amount: Uint128)
+  match sender with
+    | contract_owner => 
+        one_bnum = BNum 1; (*noop*)
+        updateContractHeldAmount add_operation amount one_bnum;
+        e = {_eventname: "RecipientAcceptTransfer"; sender: sender; recipient: recipient; amount: amount};
+        event e
+  end
+end 

@@ -1,0 +1,277 @@
+(***************************************************)
+(*              MUUDO Tracing contract             *)
+(*                                                 *)
+(*              Supply chain phases:               *)
+(*                                                 *)
+(*            0: 'RACCOLTA'                        *)
+(*            1: 'FILTRAGGIO'                      *)
+(*            2: 'IMBOTTIGLIAMENTOINFUSTO'         *)
+(*            3: 'CARICOFUSTIINLAB'                *)
+(*            4: 'ANALISILAB'                      *)
+(*            5: 'IMBOTTIGLIAMENTOINLAB'           *)
+(*            6: 'PREVENDITA'                      *)
+(***************************************************)
+(* Powered by: Vivido s.r.l.                       *)
+(* Contact: info@vivido.it                         *)
+(***************************************************)
+
+(***************************************************)
+(*                 Scilla version                  *)
+(***************************************************)
+
+scilla_version 0
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+library LaLumacaDelMugelloTracing
+
+type Geo =
+  | Geo of String
+
+type OwnerId =
+  | OwnerId of String
+  
+type Weight =
+  | Weight of Uint32
+  
+type KegsNr =
+  | KegsNr of Uint32
+  
+type BottlesNr =
+  | BottlesNr of Uint32
+  
+type Documents =
+  | Documents of (List(String))
+  
+type Phase =
+  | Raccolta of Geo OwnerId Weight
+  | Filtraggio of Geo OwnerId Weight 
+  | ImbottigliamentoInFusto of Geo OwnerId Weight KegsNr
+  | CaricoFustiInLab of Geo OwnerId KegsNr
+  | AnalisiInLab of Geo OwnerId Documents
+  | ImbottigliamentoInLab of Geo OwnerId BottlesNr
+  | PreVendita of Geo OwnerId Documents
+
+
+let one_msg = 
+  fun (msg : Message) => 
+    let nil_msg = Nil {Message} in
+    Cons {Message} msg nil_msg
+    
+let true = True
+
+let first_phase = Uint32 0
+let one_phase = Uint32 1
+
+let not_owner_code  = Uint32 1
+let phase_added_code  = Uint32 2
+let phase_not_exists_code  = Uint32 3
+let previous_phase_not_exists_code  = Uint32 4
+let lot_not_exists_code  = Uint32 5
+let phase_exists_yet_code  = Uint32 6
+let not_writer_account_code  = Uint32 7
+let writer_account_yet_code  = Uint32 8
+let pending_owner_empty_code = Uint32 9
+let pending_owner_does_not_match_code = Uint32 10
+let phase_tx_exists_yet_code = Uint32 11
+
+
+(***************************************************)
+(*             The contract definition             *)
+(***************************************************)
+
+contract LaLumacaDelMugelloTracing
+(contract_owner: ByStr20)
+
+field owner: ByStr20 = contract_owner
+field pending_owner : Option ByStr20 = None {ByStr20}
+
+field writer_accounts: Map ByStr20 Bool =
+  let emp_map = Emp ByStr20 Bool in
+    builtin put emp_map contract_owner true
+field lot_to_phase_to_data: Map String (Map Uint32 Phase) = Emp String (Map Uint32 Phase)
+field lot_to_phase_to_tx: Map String (Map Uint32 String) = Emp String (Map Uint32 String)
+
+field server_url: String = ""
+
+
+procedure throwError(err_code: Uint32)
+  e = { _exception : "Error"; code : err_code };
+  throw e
+end
+
+procedure isOwner()
+    actual_owner <- owner;
+    is_owner = builtin eq actual_owner _sender;
+    match is_owner with
+    | True =>
+    | False =>
+        throwError not_owner_code
+    end
+end
+
+procedure isWriterAccount()
+    writer_account_exists <- exists writer_accounts[_sender];
+    match writer_account_exists with
+    | True =>
+    | False =>
+        throwError not_writer_account_code
+    end
+end
+
+procedure checkPhase(lot: String, phase: Uint32)
+    lot_exists <- exists lot_to_phase_to_data[lot];
+    match lot_exists with
+    | True =>
+      prev_phase = builtin sub phase one_phase;
+      prev_phase_exists <- exists lot_to_phase_to_data[lot][prev_phase];
+      match prev_phase_exists with
+      | True =>
+        phase_exists <- exists lot_to_phase_to_data[lot][phase];
+        match phase_exists with
+        | True => throwError phase_exists_yet_code
+        | False =>
+        end
+      | False =>
+          throwError previous_phase_not_exists_code
+      end
+    | False =>
+      is_first_phase = builtin eq phase first_phase;
+      match is_first_phase with
+      | True =>
+      | False =>
+          throwError lot_not_exists_code
+      end
+    end
+end
+
+procedure setPhase(lot: String, phase_nr: Uint32, phase: Phase)
+  match phase with
+    | Raccolta geo ownerId weight =>
+      lot_to_phase_to_data[lot][phase_nr]:= phase;
+      e = {_eventname : "Raccolta"; _sender: _sender;  _phase: phase};
+      event e
+    | Filtraggio geo ownerId weight =>
+      lot_to_phase_to_data[lot][phase_nr]:= phase;
+      e = {_eventname : "Filtraggio"; _sender: _sender; _phase: phase};
+      event e
+    | ImbottigliamentoInFusto geo ownerId weight kegsNr =>
+      lot_to_phase_to_data[lot][phase_nr]:= phase;
+      e = {_eventname : "ImbottigliamentoInFusto"; _sender: _sender; _phase: phase};
+      event e
+    | CaricoFustiInLab geo ownerId kegsNr =>
+      lot_to_phase_to_data[lot][phase_nr]:= phase;
+      e = {_eventname : "CaricoFustiInLab"; _sender: _sender; _phase: phase};
+      event e      
+    | AnalisiInLab geo ownerId documents =>
+      lot_to_phase_to_data[lot][phase_nr]:= phase;
+      e = {_eventname : "AnalisiInLab"; _sender: _sender; _phase: phase};
+      event e         
+    | ImbottigliamentoInLab geo ownerId bottlesNr =>
+      lot_to_phase_to_data[lot][phase_nr]:= phase;
+      e = {_eventname : "ImbottigliamentoInLab"; _sender: _sender; _phase: phase};
+      event e   
+    | PreVendita geo ownerId documents =>
+      lot_to_phase_to_data[lot][phase_nr]:= phase;
+      e = {_eventname : "PreVendita"; _sender: _sender; _phase: phase};
+      event e   
+  end
+end
+
+procedure setTx(lot: String, phase_nr: Uint32, tx: String)
+  lot_to_phase_to_tx[lot][phase_nr] := tx
+end
+
+
+transition transferOwnership(new_owner : ByStr20)
+  isOwner;
+  po = Some {ByStr20} new_owner;
+  pending_owner := po;
+  e = {_eventname : "transferOwnership"; _sender: _sender; pending_owner: new_owner };
+  event e
+end
+
+transition resetPendingOwner(new_owner : ByStr20)
+  isOwner;
+  none = None {ByStr20};
+  pending_owner := none;
+  e = {_eventname : "resetPendingOwner" };
+  event e
+end
+
+transition claimOwnership()
+  optional_po <- pending_owner;
+  match optional_po with
+  | Some pend_owner =>
+      caller_is_new_owner = builtin eq _sender pend_owner;
+      match caller_is_new_owner with
+      | True =>
+          owner := pend_owner;
+          none = None {ByStr20};
+          pending_owner := none;
+          e = {_eventname : "claimOwnership"; new_owner: _sender };
+          event e
+      | False => 
+        throwError pending_owner_does_not_match_code
+      end
+  | None =>
+    throwError pending_owner_empty_code
+  end
+end
+
+transition setServerUrl(new_server_url: String)
+  isOwner;
+  server_url := new_server_url;
+  e = {_eventname : "setServerUrl"; _sender: _sender; server_url: new_server_url };
+  event e
+end
+
+transition addWriterAccount(account: ByStr20)
+  isOwner;
+  writer_account_exists <- exists writer_accounts[account];
+  match writer_account_exists with
+  | True =>
+      throwError writer_account_yet_code
+  | False =>
+      writer_accounts[account] := true;
+      e = {_eventname : "addWriterAccount"; _sender: _sender; account: account };
+      event e
+  end
+end
+
+transition removeWriterAccount(account: ByStr20)
+  isOwner;
+  writer_account_exists <- exists writer_accounts[account];
+  match writer_account_exists with
+  | True =>
+      delete writer_accounts[account];
+      e = {_eventname : "removeWriterAccount"; _sender: _sender; account: account };
+      event e
+  | False =>
+      throwError not_writer_account_code
+  end
+end
+
+transition addPhase(lot: String, phase_nr: Uint32, phase: Phase)
+  isWriterAccount;
+  checkPhase lot phase_nr;
+  setPhase lot phase_nr phase
+end
+
+transition addTx(lot: String, phase_nr: Uint32, tx: String)
+  isWriterAccount;
+  phase_exists <- exists lot_to_phase_to_data[lot][phase_nr];
+  tx_exists <- exists lot_to_phase_to_tx[lot][phase_nr];
+
+  match phase_exists with
+    | True =>  
+      match tx_exists with
+        | False =>
+          setTx lot phase_nr tx
+        | True => throwError phase_tx_exists_yet_code
+      end
+    | False =>
+      throwError phase_not_exists_code
+  end
+end

@@ -1,0 +1,783 @@
+scilla_version 0
+
+
+import NatUtils ListUtils BoolUtils PairUtils
+
+library BlackholeProxyLibrary
+
+type Node = | Relayer of ByStr20 ByStr20 Uint256 Uint256
+
+type Error =
+        | NULLIFIER_ERROR
+        | NOT_WHITELISTED_TOKEN_ERROR
+        | TOKEN_ADD_REMOVE_ERROR
+        | CONTRACT_PAUSED_ERROR
+        | UNKNOWN_OPERATOR_ERROR
+        | COMMIT_ERROR
+        | UNKNOWN_RELAYER_ERROR
+        | UNKNOWN_PROPOSAL_ERROR
+        | TOKEN_EMISSION_RATE_ERROR
+        | BLACKHOLE_TOKEN_ADDRESS_ERROR
+        | NOT_MIN_REQUIRED_CARB_PRICE_ERROR
+        | NOT_MIN_FEE_RATE_ERROR
+        | UNKNOWN_TRANSPORTER_ERROR
+        | CONTRACT_AMOUNT_NOT_FOUND_ERROR
+        | NO_ZIL_CONTRACT_AMOUNT_ERROR
+        | NOT_ALLOWED_DEPOSIT_ERROR
+        | TOKEN_AMOUNT_EXISTS_ERROR
+        | ZIL_AMOUNT_EXISTS_ERROR
+        | INVALID_NULLIFIER_ERROR
+        | NOT_ALLOWED_TO_ADD_RELAYER_ERROR
+        | NODE_RELAYER_ALREADY_REMOVED
+        | GASE_FEE_AMOUNT_ERROR
+        | NOT_VALID_WITHDRAW_ERROR
+        | UNKNOWN_relayer_contract_ERROR
+        | UNKNOWN_VERIFIER_ERROR
+        | NO_WITHDRAW_FOUND_ERROR
+
+let getErrorValue =
+    fun(error: Error) =>
+        match error with
+            | NULLIFIER_ERROR => Int32 -1
+            | NOT_WHITELISTED_TOKEN_ERROR => Int32 -2
+            | TOKEN_ADD_REMOVE_ERROR => Int32 -3
+            | CONTRACT_PAUSED_ERROR => Int32 -4
+            | UNKNOWN_OPERATOR_ERROR => Int32 -5
+            | COMMIT_ERROR => Int32 -6
+            | UNKNOWN_RELAYER_ERROR => Int32 -7
+            | UNKNOWN_PROPOSAL_ERROR => Int32 -8
+            | TOKEN_EMISSION_RATE_ERROR => Int32 -9
+            | BLACKHOLE_TOKEN_ADDRESS_ERROR => Int32 -10
+            | NOT_MIN_REQUIRED_CARB_PRICE_ERROR => Int32 -11
+            | NOT_MIN_FEE_RATE_ERROR => Int32 -12
+            | UNKNOWN_TRANSPORTER_ERROR => Int32 -13
+            | CONTRACT_AMOUNT_NOT_FOUND_ERROR => Int32 -14
+            | NO_ZIL_CONTRACT_AMOUNT_ERROR => Int32 -15
+            | NOT_ALLOWED_DEPOSIT_ERROR => Int32 -16
+            | TOKEN_AMOUNT_EXISTS_ERROR => Int32 -17
+            | ZIL_AMOUNT_EXISTS_ERROR => Int32 -18
+            | INVALID_NULLIFIER_ERROR => Int32 -19
+            | NOT_ALLOWED_TO_ADD_RELAYER_ERROR => Int32 -20
+            | NODE_RELAYER_ALREADY_REMOVED => Int32 -21
+            | GASE_FEE_AMOUNT_ERROR => Int32 -22
+            | NOT_VALID_WITHDRAW_ERROR => Int32 -23
+            | UNKNOWN_relayer_contract_ERROR => Int32 -24
+            | UNKNOWN_VERIFIER_ERROR => Int32 -25
+            | NO_WITHDRAW_FOUND_ERROR => Int32 -26
+        end
+
+let one_msg =
+    fun (msg: Message) =>
+    let nil_msg = Nil {Message} in
+    Cons {Message} msg nil_msg
+
+let two_msgs =
+    fun (msg1 : Message) =>
+    fun (msg2 : Message) =>
+    let msgs_tmp = one_msg msg2 in
+    Cons {Message} msg1 msgs_tmp
+
+let is_address_exists_in =
+    fun(address: ByStr20) =>
+    fun(addresses: List ByStr20) =>
+        let mem = @list_exists ByStr20 in
+        let f = fun(a: ByStr20) =>  builtin eq a address in
+        mem f addresses
+
+
+let calculate_mint_amount =
+    fun(amount: Uint128) =>
+    fun(emission_rate: Uint128) =>
+    fun(decimals: Uint128) =>
+        let div_amount = builtin div amount emission_rate in
+        builtin mul div_amount decimals
+
+let byStr20_to_uint256 = fun(address: ByStr20) =>  builtin to_uint256 address
+
+let get_uint256_at =
+    fun(publicSignals: List Uint256) =>
+    fun(index: Uint32) =>
+        let at = @list_nth Uint256 in
+        let op_elm = at index publicSignals in
+        match op_elm with | Some value => value | None => Uint256 0 end
+
+let is_address_in_public_signals =
+    fun(address: ByStr20) =>
+    fun(index: Uint32) =>
+    fun(publicSignals: List Uint256) =>
+        let number = byStr20_to_uint256 address in
+        let signale_number = get_uint256_at publicSignals index in
+        builtin eq number signale_number
+
+let unknown_address = 0x0000000000000000000000000000000000000000
+
+let true = True
+let false = False
+let fst_null = @fst Uint256 Bool
+let snd_null = @snd Uint256 Bool
+
+let snd_withdraw = @snd ByStr20 Uint256
+
+let zil_decimals = Uint128 1000000000000
+
+let nil_address = Nil {ByStr20}
+
+contract BlackholeProxy(contract_owner: ByStr20, carb_token: ByStr20)
+
+
+(*blackhole token*)
+field is_blackhole_token_address_changeable: Bool = true
+field blackhole_token: ByStr20 = unknown_address
+field blackhole_decimals: Uint128 = zil_decimals
+
+(*roles*)
+field operator: ByStr20 = contract_owner
+field relayers: Map ByStr20 Bool
+    = let emp_map = Emp ByStr20 Bool in
+    builtin put emp_map contract_owner true
+field verifier: ByStr20 = contract_owner
+field relayer_contract: ByStr20 = contract_owner
+field price_contract: ByStr20 = contract_owner
+field proposal_contract: ByStr20 = contract_owner
+field pending_operator : Option ByStr20 = None {ByStr20}
+
+field allowed_to_add_relayer: Map ByStr20 Bool = Emp ByStr20 Bool
+
+(*contracts*)
+field zil_blackholes: Map Uint128 ByStr20 = Emp Uint128 ByStr20
+field token_blackholes: Map ByStr20 (Map ByStr20 Uint128) = Emp ByStr20 (Map ByStr20 Uint128)
+
+(*tokens *)
+field tokens: List ByStr20 = Nil {ByStr20}
+
+field token_amount: Map Uint128 ByStr20 = Emp Uint128 ByStr20
+
+(*fee and price*)
+field deposit_carb_price: Uint128 = Uint128 2500000000
+field token_emission_rate: Map ByStr20 Uint128 = Emp ByStr20 Uint128
+field zil_emission_rate: Uint128 = Uint128 900000000000000
+field fee_rate: Uint128 = Uint128 100
+
+field min_carb_price_amount: Uint128 = Uint128 1000000000
+field min_fee: Uint128 = Uint128 25
+
+field gas_fee: Uint128 = Uint128 20000000000000
+
+
+(*manage contract*)
+field contract_paused: Bool = true
+
+field to_withdraws: Map Uint256 Node = Emp Uint256 Node
+
+field withdraw_count: Uint256 = Uint256 0
+
+
+procedure Continue()
+end
+
+procedure ThrowError(error: Error)
+  code = getErrorValue error;
+  e = {_exception: "Error"; code: code};
+  throw e
+end
+
+procedure IsContractAmountToken(token_address: ByStr20, contreact_amount: ByStr20)
+    op_amount <- token_blackholes[token_address][contreact_amount];
+    match op_amount with
+        | Some _ => Continue
+        | None =>
+            code = CONTRACT_AMOUNT_NOT_FOUND_ERROR;
+            ThrowError code
+    end
+end
+
+procedure IsContractAmountZil(amount: Uint128)
+    op_contract_amount <- zil_blackholes[amount];
+    match op_contract_amount with
+        | Some _ => Continue
+        | None =>
+            code = CONTRACT_AMOUNT_NOT_FOUND_ERROR;
+            ThrowError code
+    end
+end
+
+
+procedure IsNotPaused()
+  pause <- contract_paused;
+  match pause with
+    | True =>
+      code = CONTRACT_PAUSED_ERROR;
+      ThrowError code
+    | False => Continue
+  end
+end
+
+procedure IsOperator()
+    address <- operator;
+    is_eq = builtin eq _sender address;
+    match is_eq with
+        | True => Continue
+        | False =>
+            code = UNKNOWN_OPERATOR_ERROR;
+            ThrowError code
+    end
+end
+
+procedure IsVerifier()
+    address <- verifier;
+    is_eq = builtin eq _sender address;
+    match is_eq with
+        | True => Continue
+        | False =>
+            code = UNKNOWN_VERIFIER_ERROR;
+            ThrowError code
+    end
+end
+
+
+procedure IsRelayer(node: ByStr20)
+    is_eq = builtin eq _sender node;
+    op_relayer <- relayers[_sender];
+    is_in = match op_relayer with | Some value => value | None => false end;
+    is_valid = andb  is_eq is_in;
+    match is_valid with
+        | True =>  Continue
+        | False =>
+            code = UNKNOWN_RELAYER_ERROR;
+            ThrowError code
+    end
+end
+
+procedure IsProposal()
+    address <- proposal_contract;
+    is_eq = builtin eq _sender address;
+    match is_eq with
+        | True => Continue
+        | False =>
+            code = UNKNOWN_PROPOSAL_ERROR;
+            ThrowError code
+    end
+end
+
+procedure IsRelayerContract()
+    address <- relayer_contract;
+    is_eq = builtin eq _sender address;
+    match is_eq with
+        | True => Continue
+        | False =>
+            code = UNKNOWN_relayer_contract_ERROR;
+            ThrowError code
+    end
+end
+
+procedure IsWhitelisted(token_address: ByStr20)
+    addresses <- tokens;
+    is_in = is_address_exists_in token_address addresses;
+    match is_in with
+        | True => Continue
+        | False =>
+            code = NOT_WHITELISTED_TOKEN_ERROR;
+            ThrowError code
+    end
+end
+
+procedure IsGasFee()
+    fee <- gas_fee;
+    amount = builtin sub _amount fee;
+    zero_amount = Uint128 0;
+    is_eq_zero = builtin eq amount zero_amount;
+    is_greater_then_zero = builtin lt zero_amount amount;
+    is_valid = orb is_eq_zero is_greater_then_zero;
+    match is_valid with
+        | True => Continue
+        | False =>
+            code = GASE_FEE_AMOUNT_ERROR;
+            ThrowError code
+    end
+end
+
+
+
+procedure SendDepositMessages(mint_amount: Uint128, to: ByStr20, default_msgs: List Message)
+    zero_uint128 = Uint128 0;
+    is_zero = builtin eq zero_uint128 mint_amount;
+    blackhole_token_address <- blackhole_token;
+    blackhole_msg = {_tag: "Mint"; _recipient: blackhole_token_address; _amount: Uint128 0; to: to; amount: mint_amount};
+    msgs = match is_zero with | True => default_msgs | False => Cons {Message} blackhole_msg default_msgs end;
+    deposit_price <- deposit_carb_price;
+    money_contract <- price_contract;
+    price_msg = {_tag : "TransferFrom"; _recipient: carb_token; _amount: Uint128 0; from: to; to: money_contract; amount: deposit_price};
+    all_msgs = Cons {Message} price_msg msgs;
+    send all_msgs
+end
+
+procedure TransferToContract(commit: Uint256, token_address: ByStr20, contract_amount: ByStr20)
+    op_amount <- token_blackholes[token_address][contract_amount];
+    amount = match op_amount with | Some value => value | None => Uint128 0 end;
+    msg_one = {_tag : "TransferFrom"; _recipient: token_address; _amount: Uint128 0; from: _sender; to: contract_amount; amount: amount};
+    msg_two = {_tag : "Deposit"; _recipient: contract_amount; _amount: Uint128 0; commit: commit};
+    default_msgs = two_msgs msg_one msg_two;
+
+    op_emission_rate <- token_emission_rate[token_address];
+    emission_rate = match op_emission_rate with | Some value => value | None => Uint128 0 end;
+    decimals <- blackhole_decimals;
+    mint_amount = calculate_mint_amount amount emission_rate decimals;
+
+    SendDepositMessages mint_amount _sender default_msgs
+end
+
+
+transition DepositToken(commit: Uint256, token_address: ByStr20, contract_amount: ByStr20)
+    IsNotPaused;
+    IsGasFee;
+    IsWhitelisted token_address;
+    accept;
+    TransferToContract commit token_address contract_amount
+end
+
+transition DepositZil(amount: Uint128, from: ByStr20)
+    IsNotPaused;
+    IsGasFee;
+    op_contract_amount <- zil_blackholes[amount];
+
+    match op_contract_amount with
+        | Some contract_amount =>
+            is_known = builtin eq contract_amount _sender;
+            match is_known with
+                | True =>
+                    accept;
+                    emission_rate <- zil_emission_rate;
+                    decimals <- blackhole_decimals;
+                    mint_amount = calculate_mint_amount amount emission_rate decimals;
+                    nil_msgs = Nil {Message};
+                    SendDepositMessages mint_amount from nil_msgs
+                | False =>
+                    code = NOT_ALLOWED_DEPOSIT_ERROR;
+                    ThrowError code
+            end
+        | None =>
+            code = NO_ZIL_CONTRACT_AMOUNT_ERROR;
+            ThrowError code
+    end
+end
+
+
+transition WithdrawToken(
+    token_address: ByStr20,
+    contract_amount: ByStr20,
+    nullifier: Uint256,
+    recipient: ByStr20,
+    pi_a: List Uint256,
+    pi_b_1: List Uint256,
+    pi_b_2: List Uint256,
+    pi_b_3: List Uint256,
+    pi_c: List Uint256,
+    publicSignals: List Uint256,
+    treeIndex: Uint256
+)
+    IsContractAmountToken token_address contract_amount;
+    IsRelayer _sender;
+    relayer_index = Uint32 3;
+    recipient_index = Uint32 2;
+    is_relayer_in  = is_address_in_public_signals _sender relayer_index publicSignals;
+    is_recipient_in = is_address_in_public_signals recipient recipient_index publicSignals;
+    is_valid = andb is_relayer_in is_recipient_in;
+
+    match is_valid with
+        | True =>
+            fee <- fee_rate;
+            wallet <- relayer_contract;
+            msg = {
+                _tag: "Withdraw";
+                _recipient: contract_amount;
+                _amount: Uint128 0;
+                nullifier: nullifier;
+                recipient: recipient;
+                pi_a: pi_a;
+                pi_b_1: pi_b_1;
+                pi_b_2: pi_b_2;
+                pi_b_3: pi_b_3;
+                pi_c: pi_c;
+                publicSignals: publicSignals;
+                fee: fee;
+                wallet: wallet
+            };
+            p = Relayer _sender contract_amount nullifier treeIndex;
+            i <- withdraw_count;
+            to_withdraws[i] := p;
+            one_uint256 = Uint256 1;
+            new_withdraw_count = builtin add one_uint256 i;
+            withdraw_count := new_withdraw_count;
+            msgs = one_msg msg;
+            e = { _eventname: "WithdrawToken"; token_address: token_address; contract_amount: contract_amount };
+            event e;
+            send msgs
+        | False =>
+           code = NOT_VALID_WITHDRAW_ERROR;
+           ThrowError code
+    end
+end
+
+transition WithdrawZil(
+    amount: Uint128,
+    nullifier: Uint256,
+    recipient: ByStr20,
+    pi_a: List Uint256,
+    pi_b_1: List Uint256,
+    pi_b_2: List Uint256,
+    pi_b_3: List Uint256,
+    pi_c: List Uint256,
+    publicSignals: List Uint256,
+    treeIndex: Uint256
+)
+    IsContractAmountZil amount;
+    IsRelayer _sender;
+    relayer_index = Uint32 3;
+    recipient_index = Uint32 2;
+    is_relayer_in  = is_address_in_public_signals _sender relayer_index publicSignals;
+    is_recipient_in = is_address_in_public_signals recipient recipient_index publicSignals;
+    is_valid = andb is_relayer_in is_recipient_in;
+
+    match is_valid with
+        | True =>
+            op_contract_amount <- zil_blackholes[amount];
+            contract_amount = match op_contract_amount with | Some c => c | None => unknown_address end;
+            fee <- fee_rate;
+            wallet <- relayer_contract;
+            msg = {
+                _tag: "Withdraw";
+                _recipient: contract_amount;
+                _amount: Uint128 0;
+                nullifier: nullifier;
+                recipient: recipient;
+                pi_a: pi_a;
+                pi_b_1: pi_b_1;
+                pi_b_2: pi_b_2;
+                pi_b_3: pi_b_3;
+                pi_c: pi_c;
+                publicSignals: publicSignals;
+                fee: fee;
+                wallet: wallet
+            };
+            p = Relayer _sender contract_amount nullifier treeIndex;
+            i <- withdraw_count;
+            to_withdraws[i] := p;
+            one_uint256 = Uint256 1;
+            new_withdraw_count = builtin add one_uint256 i;
+            withdraw_count := new_withdraw_count;
+            msgs = one_msg msg;
+            e = { _eventname: "WithdrawZil"; contract_amount: contract_amount };
+            event e;
+            send msgs
+        | False =>
+            code = NOT_VALID_WITHDRAW_ERROR;
+            ThrowError code
+    end
+end
+
+
+
+
+(* @dev Proposal Transitions *)
+
+transition AddNewToken(token_address: ByStr20, emission_rate: Uint128)
+    IsProposal;
+    addresses <- tokens;
+    is_in = is_address_exists_in token_address addresses;
+    match is_in with
+        | True =>
+            code = TOKEN_ADD_REMOVE_ERROR;
+            ThrowError code
+        | False =>
+            all_tokens <- tokens;
+            new_tokens = Cons {ByStr20} token_address all_tokens;
+            tokens := new_tokens;
+            token_emission_rate[token_address] := emission_rate
+    end
+end
+
+transition UpdateTokenEmissionRate(token_address: ByStr20, new_emission_rate: Uint128)
+    IsProposal;
+    addresses <- tokens;
+    is_in = is_address_exists_in token_address addresses;
+    match is_in with
+        | True =>
+            token_emission_rate[token_address] := new_emission_rate
+        | False =>
+            code = TOKEN_EMISSION_RATE_ERROR;
+            ThrowError code
+    end
+end
+
+transition UpdateZilEmissionRate(new_emission_rate: Uint128)
+    IsProposal;
+    zil_emission_rate := new_emission_rate
+end
+
+transition UpdateFeeRate(new_fee: Uint128)
+    IsProposal;
+    m_fee <- min_fee;
+    is_less = builtin lt new_fee m_fee;
+    match is_less with
+        | True =>
+            code = NOT_MIN_FEE_RATE_ERROR;
+            ThrowError code
+        | False => fee_rate := new_fee
+    end
+end
+
+transition RemoveToken(token_address: ByStr20)
+    IsProposal;
+    addresses <- tokens;
+    is_in = is_address_exists_in token_address addresses;
+    match is_in with
+        | True =>
+            all_tokens <- tokens;
+            filter = @list_filter ByStr20;
+            f = fun(address: ByStr20) =>
+                    let is_eq = builtin eq address token_address in
+                    negb is_eq;
+            new_tokens = filter f all_tokens;
+            tokens := new_tokens;
+            delete token_emission_rate[token_address]
+        | False =>
+            code = TOKEN_ADD_REMOVE_ERROR;
+            ThrowError code
+    end
+end
+
+transition UpdateDepositPrice(new_deposit_carb_price: Uint128)
+    IsProposal;
+    min_amount <- min_carb_price_amount;
+    is_less = builtin lt new_deposit_carb_price min_amount;
+    match is_less with
+        | True =>
+            code = NOT_MIN_REQUIRED_CARB_PRICE_ERROR;
+            ThrowError code
+        | False => deposit_carb_price := new_deposit_carb_price
+    end
+end
+
+transition MakeBlackTokenTransferrable()
+    IsProposal;
+    address <- blackhole_token;
+    msg = {_tag: "Transferrable"; _recipient: address; _amount: Uint128 0};
+    msgs = one_msg msg;
+    send msgs
+end
+
+transition AddNewRelayer(new_relayer: ByStr20)
+    op_is_allowed <- allowed_to_add_relayer[new_relayer];
+    match op_is_allowed with
+        | Some is_allowed =>
+          match is_allowed with
+            | True =>
+                relayers[new_relayer] := true;
+                delete allowed_to_add_relayer[new_relayer]
+            | False =>
+                code = NOT_ALLOWED_TO_ADD_RELAYER_ERROR;
+                ThrowError code
+          end
+        | None =>
+            code = NOT_ALLOWED_TO_ADD_RELAYER_ERROR;
+            ThrowError code
+    end
+end
+
+transition AllowNewRelayerToAdd(new_relayer: ByStr20)
+    IsProposal;
+    allowed_to_add_relayer[new_relayer] := true
+end
+
+transition RemoveRelayer(relayer: ByStr20)
+    IsProposal;
+    delete relayers[relayer];
+    recipient <- relayer_contract;
+    msg = {_tag: "RemoveRelayer"; _recipient: recipient; _amount: Uint128 0; relayer: relayer };
+    msgs = one_msg msg;
+    send msgs
+end
+
+(* @dev Operator Transitions *)
+
+transition AddZilBlackhole(new_contract_amount: ByStr20, amount: Uint128)
+    IsOperator;
+    op_zil_amount <- zil_blackholes[amount];
+    is_exists = match op_zil_amount with | Some _ => True | None => False end;
+    match is_exists with
+        | True =>
+            code = ZIL_AMOUNT_EXISTS_ERROR;
+            ThrowError code
+        | False => zil_blackholes[amount] := new_contract_amount
+    end
+end
+
+transition RemoveZilBlackhole(amount: Uint128)
+    IsOperator;
+    delete zil_blackholes[amount]
+end
+
+
+transition AddTokenBlackhole(token_address: ByStr20, new_contract_amount: ByStr20, amount: Uint128)
+    IsOperator;
+    op_token <- token_amount[amount];
+    is_exists = match op_token with | Some v => builtin eq token_address v | None => False end;
+    match is_exists with
+        | True =>
+            code = TOKEN_AMOUNT_EXISTS_ERROR;
+            ThrowError code
+        | False => token_blackholes[token_address][new_contract_amount] := amount
+    end
+end
+
+transition RemoveTokenBlackhole(token_address: ByStr20, new_contract_amount: ByStr20)
+    IsOperator;
+    delete token_blackholes[new_contract_amount][new_contract_amount]
+end
+
+transition SetVerifier(new_verifier: ByStr20)
+    IsOperator;
+    verifier := new_verifier
+end
+
+
+transition SetBlackholeTokenAddress(new_blackhole_token: ByStr20)
+    IsOperator;
+    can_change <- is_blackhole_token_address_changeable;
+    match can_change with
+        | True =>
+            blackhole_token := new_blackhole_token;
+            is_blackhole_token_address_changeable := false
+        | False =>
+            code = BLACKHOLE_TOKEN_ADDRESS_ERROR;
+            ThrowError code
+    end
+end
+
+transition PauseContract()
+  IsOperator;
+  true = True;
+  contract_paused := true
+end
+
+transition UnpauseContract()
+    IsOperator;
+    false = False;
+    contract_paused := false
+end
+
+transition SetMinCarbPrice(new_min_deposit_carb_price: Uint128)
+    IsOperator;
+    min_carb_price_amount := new_min_deposit_carb_price
+end
+
+transition SetMinFeeRate(new_min_fee_rate: Uint128)
+    IsOperator;
+    min_fee := new_min_fee_rate
+end
+
+transition SetRelayerContract(new_relayer_contract: ByStr20)
+    IsOperator;
+    relayer_contract := new_relayer_contract
+end
+
+transition SetPriceContract(new_price_contract: ByStr20)
+    IsOperator;
+    price_contract := new_price_contract
+end
+
+transition SetProposalContract(new_proposal_contract: ByStr20)
+    IsOperator;
+    proposal_contract := new_proposal_contract
+end
+
+transition RequestOwnershipTransfer(new_operator : ByStr20)
+      IsOperator;
+      op_operator = Some {ByStr20} new_operator;
+      pending_operator := op_operator
+end
+
+transition ConfirmOwnershipTransfer()
+  optional_po <- pending_operator;
+  match optional_po with
+  | Some new_operator =>
+      caller_is_new_owner = builtin eq _sender new_operator;
+      match caller_is_new_owner with
+      | True =>
+          operator := new_operator;
+          none = None {ByStr20};
+          pending_operator := none
+      | False =>
+        err = UNKNOWN_OPERATOR_ERROR;
+        ThrowError err
+      end
+  | None =>
+  end
+end
+
+
+(* @dev Verifier Transitions *)
+transition VerifyProof(proof: Pair Uint256 Bool, contract_address: ByStr20, index: Uint256)
+    IsNotPaused;
+    IsVerifier;
+    nullifier = fst_null proof;
+    is_valid_proof  = snd_null proof;
+    match is_valid_proof with
+        | True =>
+            op_withdraw <- to_withdraws[index];
+            match op_withdraw with
+                | Some withdraw =>
+                    match withdraw with
+                        | Relayer node con nullifier_withdraw _ =>
+                        ie_eq_con = builtin eq contract_address con;
+                        is_eq = builtin eq nullifier nullifier_withdraw;
+                        is_valid = andb is_eq ie_eq_con;
+                        match is_eq with
+                            | True =>
+                                delete to_withdraws[index];
+
+                                fee <- gas_fee;
+                                two_uin128 = Uint128 2;
+
+                                two_zil = Uint128 2000000000000;
+                                gas_fees = builtin div fee two_uin128;
+                                relayer_gas_fee = builtin sub gas_fees two_zil;
+                                verifier_gas_fee = builtin add gas_fees two_zil;
+
+                                verifer_msg = {_tag: "";  _recipient: _sender; _amount: verifier_gas_fee};
+                                relayer_msg = {_tag: "";  _recipient: node; _amount: relayer_gas_fee};
+                                proof_msg = {_tag: "VerifyProof";  _recipient: contract_address; _amount: Uint128 0; proof: proof };
+                                sub_msgs = two_msgs proof_msg verifer_msg;
+                                msgs = Cons {Message} relayer_msg sub_msgs;
+                                send msgs
+                            | False =>
+                                code = INVALID_NULLIFIER_ERROR;
+                                ThrowError code
+                        end
+                    end
+                | None =>
+                    code = NO_WITHDRAW_FOUND_ERROR;
+                    ThrowError code
+            end
+        | False =>
+            delete to_withdraws[index]
+    end
+end
+
+transition RecipientAcceptTransferFrom(initiator : ByStr20, sender : ByStr20, recipient : ByStr20, amount : Uint128)
+end
+
+transition RecipientAcceptTransfer(sender : ByStr20, recipient : ByStr20, amount : Uint128)
+end
+
+transition TransferSuccessCallBack(sender : ByStr20, recipient : ByStr20, amount : Uint128)
+end
+
+transition TransferFromSuccessCallBack (initiator : ByStr20, sender : ByStr20, recipient : ByStr20, amount : Uint128)
+end
+
+transition MintSuccessCallBack(minter: ByStr20, recipient: ByStr20, amount: Uint128)
+end
+
+transition BurnSuccessCallBack(burner: ByStr20, burn_account: ByStr20, amount: Uint128)
+end

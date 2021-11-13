@@ -1,0 +1,153 @@
+(* ZFan *)
+
+(***************************************************)
+(*                 Scilla version                  *)
+(***************************************************)
+
+scilla_version 0
+
+(***************************************************)
+(*               Associated library                *)
+(***************************************************)
+import IntUtils BoolUtils
+library ZFan
+
+let one_msg =
+  fun (msg: Message) =>
+  let nil_msg = Nil {Message} in
+  Cons {Message} msg nil_msg
+
+let optional_value =
+  tfun 'A =>
+  fun (default: 'A) =>
+  fun (opt_val: Option 'A) =>
+    match opt_val with
+    | Some v => v
+    | None => default
+    end
+
+let one32  = Uint32 1
+let one128  = Uint128 1
+let one256  = Uint256 1
+let zero128  = Uint128 0
+let zero256  = Uint256 0
+let true = True
+let false = False
+
+let get_val128 = 
+  fun (value: Option Uint128) =>
+  let opt = @optional_value Uint128 in
+  opt zero128 value 
+    
+
+(* Error exception *)
+type Error =
+  | CodeNotContractOwner
+  | CodeInvalidOperation
+  
+let make_error =
+fun (result : Error) =>
+  let result_code = 
+    match result with
+    | CodeNotContractOwner  => Int32 -1
+    | CodeInvalidOperation  => Int32 -2
+    end
+  in
+  { _exception : "ZFanError"; code : result_code }
+  
+contract ZFan
+(
+  owner : ByStr20,
+  token : ByStr20
+)
+
+field blade_epoch: Uint128 = zero128
+field blades: Map Uint128 (Map ByStr20 (Uint128))
+                = Emp Uint128 (Map ByStr20 (Uint128))
+
+(* Emit Errors *)
+procedure ThrowError(err : Error)
+  e = make_error err;
+  throw e
+end
+
+
+procedure SendToken(amount: Uint128, to_address : ByStr20)
+  msg_to_token =  {
+    _tag : "Transfer"; _recipient: token; _amount: zero128;
+    to: to_address; amount: amount
+  };
+  msgs = one_msg msg_to_token;
+  send msgs
+end
+
+procedure ThrowNotSenderIsOwner()
+  is_owner = builtin eq _sender owner;
+  match is_owner with
+  | True =>
+  | False =>
+    err = CodeNotContractOwner;
+    ThrowError err
+  end
+end
+
+procedure Blade(recipient: Pair ByStr20 Uint128)
+  epoch <- blade_epoch;
+  match recipient with
+    | Pair address amount => 
+      maybe_old <- blades[epoch][address];
+      match maybe_old with
+        | Some old =>
+        | None =>
+          blades[epoch][address] := amount;
+          SendToken amount address
+      end
+  end
+end
+
+transition FanOut(recipients: List (Pair ByStr20 Uint128))
+  ThrowNotSenderIsOwner;
+  forall recipients Blade 
+end
+
+transition PullBack(amount: Uint128)
+  ThrowNotSenderIsOwner;
+  SendToken amount owner
+end
+
+transition UpdateEpoch(epoch: Uint128)
+  ThrowNotSenderIsOwner;
+  blade_epoch := epoch
+end
+
+(***************************************)
+(*             Callbacks               *)
+(***************************************)
+
+transition RecipientAcceptTransfer(
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+  is_valid_transfer_to_self =
+    let is_token = builtin eq _sender token in
+    let owner_triggered = builtin eq sender owner in
+    let is_transfer_to_self = builtin eq recipient _this_address in
+    let con = andb owner_triggered is_transfer_to_self in
+    andb con is_token;
+
+  match is_valid_transfer_to_self with
+  | False =>
+    err = CodeInvalidOperation;
+    ThrowError err
+  | True => (* noop *)
+  end
+end
+
+transition TransferSuccessCallBack(
+  sender : ByStr20,
+  recipient : ByStr20,
+  amount : Uint128
+)
+  (*Do nothing*)
+end
